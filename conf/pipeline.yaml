@@ -25,7 +25,7 @@ generate:
     timeout_seconds: 60
     user_agent: catalog-pipeline-learning-project/0.1
   landing_dir: &landing_dir data/landing
-  ground_truth_path: data/ground_truth/ground_truth.csv
+  ground_truth_path: &ground_truth_path data/ground_truth/ground_truth.csv
   brand_aliases_path: &brand_aliases_path data/reference/brand_aliases.csv   # reference table for silver
   batch_dates: ["2025-03-01", "2025-03-02", "2025-03-03"]   # day 1 = full snapshot, then change feeds
 
@@ -72,6 +72,7 @@ ingest:
     schema_drift_log: schema_drift_log
     silver_log: silver_log
     history_log: history_log
+    er_run_log: er_run_log
 
 normalization:
   # Trailing legal-entity words ignored when comparing brand names ("Acme Co." == "ACME").
@@ -90,3 +91,21 @@ silver:
 history:
   tables:
     offer_history: offer_history   # gold layer, SCD2 over price + stock_status (see docs/DECISIONS.md D10-D18)
+
+er:
+  ground_truth_path: *ground_truth_path   # evaluation only, never used for matching
+  tables:
+    product_xref: product_xref     # gold: (vendor_id, vendor_sku) -> master_id
+    dim_product: dim_product       # gold: one golden record per master_id
+  blocking:
+    min_token_length: 4            # model-like title tokens (letters and digits) at least this long
+    max_block_size: 50             # blocks bigger than this are dropped (generic tokens; D22)
+    title_prefix_tokens: 2         # pass 2 key: brand + first N title words after removing the brand
+  scoring:                         # score = sum(weight * similarity), each similarity in [0, 1] (D23)
+    weights: {jaccard: 0.35, levenshtein: 0.25, price: 0.40}   # tuned on ground truth, see DECISIONS D23
+    threshold: 0.65
+    min_price_closeness: 0.85      # prices further apart than this never match (D30)
+    best_match_per_vendor: true    # keep an edge only if it is each side's best match in the other vendor (D31)
+  label_propagation_rounds: 3      # D25
+  golden:
+    vendor_priority: [A, B, D, C]  # tie-break when two records are equally complete (D27)

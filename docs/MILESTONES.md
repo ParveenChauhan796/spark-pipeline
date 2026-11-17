@@ -154,18 +154,18 @@ row per `offer_key`, no overlapping intervals, replaying a batch is a no-op.
 *Spark concept: a self-join compares a DataFrame to itself. Comparing all ~240k records pairwise is
 ~30 billion pairs, which is why blocking is needed: only compare records that share a cheap key.*
 
-- [ ] **5a: Tier 1.** Exact match on `gtin14` produces edges with `match_method='GTIN'`
-- [ ] **5b: Tier 2.** Blocked fuzzy matching:
+- [x] **5a: Tier 1.** Exact match on `gtin14` produces edges with `match_method='GTIN'`
+- [x] **5b: Tier 2.** Blocked fuzzy matching:
   - Blocking pass 1: (brand, model-number token). Pass 2 (cut if behind): (brand, first title tokens)
   - Cross-vendor pairs only, using `a.key < b.key` to avoid duplicate pairs
   - Score with a weighted blend of token Jaccard (`array_intersect`/`array_union`), `levenshtein`
     ratio, and price closeness. Built-ins only. Tune keys and weights against ground truth
-- [ ] **5c: Cluster.** Fixed 3-round label propagation: each round, every record adopts the smallest
+- [x] **5c: Cluster.** Fixed 3-round label propagation: each round, every record adopts the smallest
       key among itself and its matched neighbours (join plus `groupBy min`). Approximate when
       clusters have more than one record per vendor; evaluation shows how much
-- [ ] **5d: Golden record.** Window function picks the most complete record per master, with a
+- [x] **5d: Golden record.** Window function picks the most complete record per master, with a
       vendor priority tiebreak. Write `gold.product_xref` and `gold.dim_product`
-- [ ] **5e: Evaluate.** Pairwise precision and recall vs `ground_truth`, logged to `ops.er_run_log`
+- [x] **5e: Evaluate.** Pairwise precision and recall vs `ground_truth`, logged to `ops.er_run_log`
       (records, candidate pairs, edges, masters, precision, recall, seconds). Target precision >= 0.95
 
 **Tests:** exact match, typo positive, different-model negative, 3-record chain.

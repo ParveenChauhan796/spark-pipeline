@@ -142,3 +142,116 @@ alternative would be, and where to change it.
   is identical; only that batch's log counts differ from a clean run.
 - **Alternative:** Read the MERGE's own metrics from `DESCRIBE HISTORY` on retry.
 - **Where:** `pipeline.py` (`history_batch`).
+
+## M5: Entity resolution
+
+### D19. ER recomputes everything each run, from the latest silver values
+- **Status:** Accepted 2026-11-17
+- **Decision:** ER reads all of `silver.vendor_product` (217k records), plus each offer's current price
+  from `gold.offer_history`. It overwrites `gold.product_xref` and `gold.dim_product` in full, and runs once
+  after the batch loop rather than per batch.
+- **Why:** At this size a full run takes about a minute, and incremental ER (matching only new records
+  against existing masters) is a project of its own.
+- **Alternative:** Incremental ER: block only new or changed records against the existing master records.
+- **Where:** `pipeline.py` (`resolve_entities`).
+
+### D20. Only cross-vendor pairs can match, GTIN included
+- **Status:** Accepted 2026-11-17
+- **Decision:** Two records from the same vendor are never linked directly. This assumes a vendor lists
+  each product once. They can still end up in one cluster through other vendors.
+- **Alternative:** Allow same-vendor edges to catch a vendor's own duplicate listings.
+- **Where:** `match/candidates.py`.
+
+### D21. Blocking pass 1 uses (brand, model-like token), and brandless records skip fuzzy matching
+- **Status:** Accepted 2026-11-17
+- **Decision:** A record's tokens are its normalized model plus any title token containing both letters
+  and digits, at least `er.blocking.min_token_length` long. Vendor C has no model column, but its titles
+  carry the model in about 56% of rows. Records with no brand (about 5%) only match through GTIN.
+- **Alternative:** Block on the token alone, with brand as a veto (gains recall on brandless records,
+  but blocks like `120v` get huge).
+- **Where:** `match/candidates.py`, `er.blocking` in `conf/pipeline.yaml`.
+
+### D22. Oversized blocks are dropped
+- **Status:** Accepted 2026-11-17
+- **Decision:** Blocks with more than `er.blocking.max_block_size` records are skipped, because they come
+  from generic tokens and comparing every pair in them grows quadratically. The number dropped is logged
+  in `ops.er_run_log`.
+- **Where:** `match/candidates.py`.
+
+### D23. Fuzzy score = weighted blend, tuned on the ground truth
+- **Status:** Accepted 2026-11-17
+- **Decision:** `w1*token_jaccard + w2*levenshtein_ratio + w3*price_closeness >= threshold`. Weights and
+  threshold live in `er.scoring` and are tuned against `ground_truth` (there's no holdout, so the
+  reported precision and recall are optimistic; see also D2). Tuned values: weights 0.35 / 0.25 / 0.40,
+  threshold 0.65. The first guess (0.45 / 0.35 / 0.20, threshold 0.75) gave precision 0.832 and recall 0.807.
+- **Alternative:** Hold out one vendor pair, or half the products, for evaluation.
+- **Where:** `match/score.py`, `er.scoring`.
+
+### D24. A different model number or GTIN vetoes a fuzzy match
+- **Status:** Accepted 2026-11-17
+- **Decision:** If both records have a model and the normalized models differ, or both have a `gtin14`
+  and they differ, the pair is never a fuzzy match, whatever the score. This favours precision.
+- **Why:** Profiling showed models are identical across vendors for the same product (0 of 46k differ).
+- **Where:** `match/score.py`.
+
+### D25. Clusters come from 3 rounds of label propagation
+- **Status:** Accepted 2026-11-17
+- **Decision:** Each record repeatedly takes the smallest record key among itself and its neighbours.
+  Chains longer than 3 hops may stay split, and one bad edge merges two products. Clusters holding two
+  records from the same vendor are counted in `ops.er_run_log` as a sign of that.
+- **Known failure (tested):** a record with no model can bridge two records whose models differ (A-C
+  and C-D pass, A-D is vetoed), so A and D end up in one cluster. See
+  `test_known_limitation_a_record_without_model_can_chain_two_models`.
+- **Alternative:** Iterate until nothing changes (exact connected components), or use GraphFrames
+  (a new dependency, not approved). A cluster-level veto (refuse a merge that would put two different
+  models or GTINs in one cluster) would fix the failure above.
+- **Where:** `match/cluster.py`, `er.label_propagation_rounds`.
+
+### D26. `master_id` = the smallest record key in the cluster
+- **Status:** Accepted 2026-11-17
+- **Decision:** `master_id` is the smallest `vendor_id|vendor_sku` in a cluster. It's deterministic for
+  the same input, but it can change when a new record with a smaller key joins.
+- **Alternative:** A persistent master-id mapping table that carries ids over between runs.
+- **Where:** `match/cluster.py`.
+
+### D27. Golden record: most complete record, then vendor priority
+- **Status:** Accepted 2026-11-17
+- **Decision:** Per master, the record with the most non-null fields among brand, category, model and
+  `gtin14` wins. Ties go to vendor priority (`er.golden.vendor_priority`), then to the smallest key. The
+  whole golden record is taken from that one record; nothing is mixed in from others.
+- **Alternative:** Field-level survivorship (best value per attribute from any record in the cluster).
+- **Where:** `match/golden.py`.
+
+### D28. `product_xref.match_method` is the strongest way a record was linked
+- **Status:** Accepted 2026-11-17
+- **Decision:** `GTIN` if the record has any GTIN edge, else `FUZZY` if it has a fuzzy edge, else
+  `SINGLETON`. Records linked only through clustering keep the method of their own edges.
+- **Where:** `match/golden.py`.
+
+### D29. An ER re-run is skipped when its inputs and config haven't changed
+- **Status:** Accepted 2026-11-17
+- **Decision:** `ops.er_run_log` records the Delta versions of `silver.vendor_product` and
+  `gold.offer_history` that a run read, plus a sha256 of the `er` config section. If a logged run has
+  the same three values, ER is skipped (`er --force` re-runs anyway). A re-run overwrites the gold tables
+  with identical output, because everything is deterministic.
+- **Where:** `pipeline.py` (`resolve_entities`), `ingest/ops.py`.
+
+### D30. Prices too far apart never match
+- **Status:** Accepted 2026-11-17 (added during tuning)
+- **Decision:** A fuzzy pair needs `price_closeness >= er.scoring.min_price_closeness` (0.85). The source
+  has many different products with identical titles and models (duplicate Amazon listings), and only
+  price tells them apart. True pairs: 99% have closeness >= 0.81. Wrong pairs: median 0.16.
+- **Effect:** Cluster precision went from 0.83 to 0.95 together with the reweighting in D23.
+- **Caveat:** This relies on synthetic prices: vendor spread <= 10% plus up to 15% drift over three days. Real
+  feeds with sales or bundles would need a looser gate.
+- **Where:** `match/score.py` (`accepted`).
+
+### D31. Keep only each record's best match per other vendor
+- **Status:** Accepted 2026-11-17 (added during tuning)
+- **Decision:** An edge survives only if it is the best-scoring edge for both of its records into the
+  other's vendor. GTIN edges rank above any fuzzy edge, and ties go to the smaller key. This builds on D20
+  (a vendor lists each product once).
+- **Effect:** Cluster precision went from 0.952 to 0.989 with recall unchanged (0.914 -> 0.913), because it
+  stops the chains of wrong edges that merged clusters.
+- **Alternative:** Turn it off with `er.scoring.best_match_per_vendor: false`.
+- **Where:** `match/score.py` (`best_match_per_vendor`, `combine_edges`).

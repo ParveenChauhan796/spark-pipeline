@@ -1,4 +1,4 @@
-"""ops.batch_log, ops.schema_drift_log, ops.silver_log and ops.history_log: small Delta tables recording what each batch did.
+"""ops.batch_log, ops.schema_drift_log, ops.silver_log, ops.history_log and ops.er_run_log: small Delta tables recording what each batch did.
 
 All logs keep exactly one set of rows per (vendor_id, batch_id): recording a batch again
 replaces its earlier rows instead of appending, so re-running a batch never changes the logs.
@@ -11,7 +11,7 @@ from pathlib import Path
 from delta.tables import DeltaTable
 from pyspark.sql import DataFrame, SparkSession
 from pyspark.sql import functions as F
-from pyspark.sql.types import BooleanType, LongType, StringType, StructField, StructType, TimestampType
+from pyspark.sql.types import BooleanType, DoubleType, LongType, StringType, StructField, StructType, TimestampType
 
 from catalog_pipeline.ingest.drift import Drift
 from catalog_pipeline.paths import table_path
@@ -67,6 +67,32 @@ HISTORY_LOG_SCHEMA = StructType(
         StructField("unchanged", LongType(), False),
         StructField("stale", LongType(), False),  # already in history (replay or crash retry)
         StructField("table_version", LongType(), True),  # gold.offer_history version after this batch
+        StructField("processed_at", TimestampType(), False),
+    ]
+)
+
+ER_RUN_LOG_SCHEMA = StructType(
+    [
+        # Input table versions + ER config identify a run: same inputs -> same output, so ER is skipped (D29).
+        StructField("product_version", LongType(), False),  # silver.vendor_product
+        StructField("history_version", LongType(), False),  # gold.offer_history
+        StructField("config_hash", StringType(), False),  # sha256 of the `er` config section
+        StructField("records", LongType(), False),
+        StructField("gtin_pairs", LongType(), False),
+        StructField("candidate_pairs_pass1", LongType(), False),
+        StructField("candidate_pairs", LongType(), False),  # both blocking passes, de-duplicated
+        StructField("blocks_dropped", LongType(), False),  # oversized blocks skipped (D22)
+        StructField("fuzzy_edges", LongType(), False),
+        StructField("edges", LongType(), False),  # GTIN + fuzzy, de-duplicated
+        StructField("edge_precision", DoubleType(), True),
+        StructField("masters", LongType(), False),
+        StructField("same_vendor_clusters", LongType(), False),
+        StructField("predicted_pairs", LongType(), False),
+        StructField("true_pairs", LongType(), False),
+        StructField("correct_pairs", LongType(), False),
+        StructField("precision", DoubleType(), True),
+        StructField("recall", DoubleType(), True),
+        StructField("seconds", DoubleType(), False),
         StructField("processed_at", TimestampType(), False),
     ]
 )
@@ -187,3 +213,28 @@ def _logged(spark: SparkSession, config: dict, name: str, vendor_id: str, batch_
         return False
     log = spark.read.format("delta").load(path)
     return log.filter((F.col("vendor_id") == vendor_id) & (F.col("batch_id") == batch_id)).limit(1).count() > 0
+
+
+def _er_run_predicate(product_version: int, history_version: int, config_hash: str) -> str:
+    if not re.fullmatch(r"[0-9a-f]{64}", config_hash):
+        raise ValueError(f"config_hash must be a sha256 hex digest, got {config_hash!r}")
+    return (
+        f"product_version = {int(product_version)} AND history_version = {int(history_version)} "
+        f"AND config_hash = '{config_hash}'"
+    )
+
+
+def record_er_run(spark: SparkSession, config: dict, metrics: dict) -> None:
+    """One row per (input versions, config); a forced re-run on the same inputs replaces its row."""
+    row = tuple(metrics.get(f.name) for f in ER_RUN_LOG_SCHEMA.fields[:-1]) + (_now(),)
+    df = spark.createDataFrame([row], ER_RUN_LOG_SCHEMA)
+    predicate = _er_run_predicate(metrics["product_version"], metrics["history_version"], metrics["config_hash"])
+    replace_where(df, log_path("er_run_log", config), predicate)
+
+
+def er_done(spark: SparkSession, config: dict, product_version: int, history_version: int, config_hash: str) -> bool:
+    path = str(log_path("er_run_log", config))
+    if not DeltaTable.isDeltaTable(spark, path):
+        return False
+    log = spark.read.format("delta").load(path)
+    return log.filter(_er_run_predicate(product_version, history_version, config_hash)).limit(1).count() > 0

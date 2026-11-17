@@ -3,6 +3,8 @@
 I/O lives here and in ingest/. The functions in transform/ stay pure.
 """
 import argparse
+import hashlib
+import json
 import time
 from dataclasses import dataclass
 
@@ -16,6 +18,7 @@ from catalog_pipeline.history import scd2
 from catalog_pipeline.ingest import ops
 from catalog_pipeline.ingest.bronze import SKIPPED, SUCCESS, BatchOutcome, bronze_path, ingest_batch
 from catalog_pipeline.ingest.contracts import Contract, load_contracts
+from catalog_pipeline.match import candidates, cluster, evaluate, golden, score
 from catalog_pipeline.paths import resolve, table_path
 from catalog_pipeline.spark import get_spark
 from catalog_pipeline.transform import silver as silver_tf
@@ -23,7 +26,7 @@ from catalog_pipeline.transform import silver as silver_tf
 DONE = "DONE"
 ALREADY_DONE = "ALREADY_DONE"
 NOT_INGESTED = "NOT_INGESTED"
-NOT_READY = "NOT_READY"  # history: silver has not processed this batch
+NOT_READY = "NOT_READY"  # history: silver has not processed this batch; ER: no input tables yet
 
 
 @dataclass(frozen=True)
@@ -235,6 +238,99 @@ def run_all(spark: SparkSession, config: dict) -> list[BatchResult]:
     return results
 
 
+@dataclass(frozen=True)
+class ErOutcome:
+    status: str  # DONE | ALREADY_DONE | NOT_READY
+    metrics: dict | None = None
+
+
+def load_ground_truth(spark: SparkSession, config: dict) -> DataFrame:
+    """record_key, true_product_id from the generator's ground truth (evaluation only)."""
+    path = resolve(config["er"]["ground_truth_path"])
+    truth = spark.read.format("csv").option("header", True).schema(
+        "vendor_id string, vendor_sku string, true_product_id string"
+    ).load(str(path))
+    return truth.select(F.concat_ws("|", "vendor_id", "vendor_sku").alias("record_key"), "true_product_id")
+
+
+def _gold_path(config: dict, name: str):
+    return table_path("gold", config["er"]["tables"][name], config)
+
+
+def resolve_entities(spark: SparkSession, config: dict, force: bool = False) -> ErOutcome:
+    """Cross-vendor entity resolution over all of silver.vendor_product (full recompute, D19).
+
+    Writes gold.product_xref and gold.dim_product (overwritten) and one ops.er_run_log row. Skipped
+    when the input table versions are the ones the last run used (D29), unless `force`.
+    """
+    product_path = _silver_path(config, "vendor_product")
+    history_path = _history_path(config)
+    if not (DeltaTable.isDeltaTable(spark, str(product_path)) and DeltaTable.isDeltaTable(spark, str(history_path))):
+        return ErOutcome(NOT_READY)
+    product_version = _version(DeltaTable.forPath(spark, str(product_path)))
+    history_version = _version(DeltaTable.forPath(spark, str(history_path)))
+    config_hash = hashlib.sha256(json.dumps(config["er"], sort_keys=True).encode()).hexdigest()
+    if not force and ops.er_done(spark, config, product_version, history_version, config_hash):
+        return ErOutcome(ALREADY_DONE)
+
+    start = time.perf_counter()
+    er = config["er"]
+    products = spark.read.format("delta").option("versionAsOf", product_version).load(str(product_path))
+    prices = (
+        spark.read.format("delta").option("versionAsOf", history_version).load(str(history_path))
+        .filter(F.col("is_current")).select("offer_key", "price")
+    )
+    # localCheckpoint() (not persist()) for every ER step: it stores the computed rows AND forgets how
+    # they were made. A persisted DataFrame keeps its whole recipe, and each later query embeds it, so
+    # after seven chained steps one evaluation query had a 1.1 MB plan that AQE re-printed on every
+    # re-plan, until the driver ran out of heap. Checkpointed steps start each query from a flat plan
+    # (~3 KB). Trade-off: lost blocks cannot be recomputed, which is fine with one local process.
+    records = candidates.prepare(products, prices).localCheckpoint()
+    gtin_pairs = candidates.gtin_pairs(records).localCheckpoint()
+    pass1, dropped1 = candidates.block_pairs(
+        candidates.model_token_keys(records, er["blocking"]["min_token_length"]), er["blocking"]["max_block_size"]
+    )
+    pass2, dropped2 = candidates.block_pairs(
+        candidates.title_prefix_keys(records, er["blocking"]["title_prefix_tokens"]), er["blocking"]["max_block_size"]
+    )
+    pass1 = pass1.localCheckpoint()
+    candidate_pairs = pass1.unionByName(pass2).distinct().localCheckpoint()
+    scored = score.score_pairs(candidate_pairs, records, er["scoring"]["weights"])
+    scoring = er["scoring"]
+    fuzzy = score.accepted(scored, scoring["threshold"], scoring["min_price_closeness"])
+    fuzzy = fuzzy.localCheckpoint()
+    edges = score.combine_edges(gtin_pairs, fuzzy, scoring["best_match_per_vendor"])
+    edges = edges.localCheckpoint()
+
+    labels = cluster.label_propagation(records.select("record_key"), edges, er["label_propagation_rounds"])
+    xref = golden.build_xref(records, labels, edges).localCheckpoint()
+    dim = golden.build_dim(records, xref, er["golden"]["vendor_priority"])
+    for df, name in ((xref, "product_xref"), (dim, "dim_product")):
+        df.write.format("delta").mode("overwrite").option("overwriteSchema", True).save(str(_gold_path(config, name)))
+
+    truth = load_ground_truth(spark, config)
+    edge_eval = evaluate.edge_metrics(edges, truth)
+    metrics = {
+        "product_version": product_version,
+        "history_version": history_version,
+        "config_hash": config_hash,
+        "records": records.count(),
+        "gtin_pairs": gtin_pairs.count(),
+        "candidate_pairs_pass1": pass1.count(),
+        "candidate_pairs": candidate_pairs.count(),
+        "blocks_dropped": dropped1.count() + dropped2.count(),
+        "fuzzy_edges": fuzzy.count(),
+        "edges": edge_eval["edges"],
+        "edge_precision": edge_eval["correct_edges"] / edge_eval["edges"] if edge_eval["edges"] else None,
+        "masters": xref.select("master_id").distinct().count(),
+        "same_vendor_clusters": golden.same_vendor_clusters(xref).count(),
+        **evaluate.cluster_metrics(xref, truth),
+    }
+    metrics["seconds"] = round(time.perf_counter() - start, 1)
+    ops.record_er_run(spark, config, metrics)
+    return ErOutcome(DONE, metrics)
+
+
 def _describe(result: BatchResult, seconds: float) -> str:
     b, s, h = result.bronze, result.silver, result.history
     drift = ", ".join(f"{d.drift_type}({d.source_column})" for d in b.drifts) or "-"
@@ -250,16 +346,33 @@ def _describe(result: BatchResult, seconds: float) -> str:
     return f"vendor {b.vendor_id} {b.batch_id}: {bronze}; drift: {drift}; {silver}; {history} [{seconds:.1f}s]"
 
 
+def _describe_er(outcome: ErOutcome) -> str:
+    m = outcome.metrics
+    if not m:
+        return f"er {outcome.status}"
+    pct = lambda v: "n/a" if v is None else f"{v:.4f}"  # noqa: E731
+    return (
+        f"er {outcome.status}: records={m['records']} candidates={m['candidate_pairs']} (pass1 {m['candidate_pairs_pass1']}) "
+        f"gtin={m['gtin_pairs']} fuzzy={m['fuzzy_edges']} masters={m['masters']} "
+        f"precision={pct(m['precision'])} recall={pct(m['recall'])} edge_precision={pct(m['edge_precision'])} "
+        f"same_vendor_clusters={m['same_vendor_clusters']} [{m['seconds']}s]"
+    )
+
+
 def main(argv: list[str] | None = None) -> None:
     parser = argparse.ArgumentParser(prog="catalog_pipeline.pipeline")
-    parser.add_argument("command", choices=["run-all"])
-    parser.parse_args(argv)
+    parser.add_argument("command", choices=["run-all", "er"])
+    parser.add_argument("--force", action="store_true", help="er: re-run even if the inputs did not change")
+    args = parser.parse_args(argv)
 
     config = load_config()
     spark = get_spark(config)
     spark.sparkContext.setLogLevel("WARN")
     try:
-        run_all(spark, config)
+        if args.command == "run-all":
+            run_all(spark, config)
+        outcome = resolve_entities(spark, config, force=args.force)
+        print(_describe_er(outcome))
     finally:
         spark.stop()
 
