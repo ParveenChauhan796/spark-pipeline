@@ -1,0 +1,86 @@
+spark:
+  app_name: catalog_pipeline
+  master: "local[*]"        # local mode: all CPU cores of this machine act as the workers
+  shuffle_partitions: 8     # Spark's default of 200 is far too many for small local data
+  ui_enabled: true          # Spark UI at http://localhost:4040 while a session is running
+  warehouse_dir: data/spark-warehouse
+
+lake:
+  root: data/lake
+  layers:
+    bronze: bronze
+    silver: silver
+    gold: gold
+    ops: ops
+
+generate:
+  seed: 42
+  source:
+    # Amazon Reviews 2023 item metadata (McAuley Lab), category Appliances. No license is stated by
+    # the dataset; used for private local learning only (data/ is gitignored, nothing redistributed).
+    url: https://huggingface.co/datasets/McAuley-Lab/Amazon-Reviews-2023/resolve/main/raw/meta_categories/meta_Appliances.jsonl
+    path: data/source/meta_Appliances.jsonl
+    max_records: 100000
+    timeout_seconds: 60
+    user_agent: catalog-pipeline-learning-project/0.1
+  landing_dir: &landing_dir data/landing
+  ground_truth_path: data/ground_truth/ground_truth.csv
+  brand_aliases_path: &brand_aliases_path data/reference/brand_aliases.csv   # reference table for silver
+  batch_dates: ["2025-03-01", "2025-03-02", "2025-03-03"]   # day 1 = full snapshot, then change feeds
+
+  # Synthetic attributes (prices, stock and barcodes are never taken from the source)
+  gtin_fraction: 0.6          # share of products that have a barcode
+  price_range: [5.0, 2500.0]  # base price, log-uniform
+  out_of_stock_fraction: 0.10
+  stock_qty_max: 40
+
+  # Per-batch dynamics (change feeds on days 2-3)
+  change_rate: 0.10           # share of a vendor's offers whose price and/or stock changes
+  new_item_rate: 0.03         # share of not-yet-listed products a vendor adds per change day
+  resend_rate: 0.05           # unchanged rows re-sent in a change feed
+  price_change_magnitude: 0.15
+
+  # Injected mess (all rates are per vendor-product or per row)
+  mess:
+    typo_rate: 0.08
+    word_shuffle_rate: 0.05
+    brand_in_title_rate: 0.30
+    brand_alias_rate: 0.15
+    uppercase_or_lowercase_rate: 0.10
+    extra_whitespace_rate: 0.08
+    missing_brand_rate: 0.05
+    missing_category_rate: 0.05
+    missing_gtin_rate: 0.10
+    missing_price_rate: 0.01
+    missing_qty_rate: 0.02
+    null_sku_rate: 0.005
+    duplicate_row_rate: 0.01
+
+  vendors:
+    A: {coverage: 0.60, title_max_len: 90,  price_spread: 0.05}
+    B: {coverage: 0.55, title_max_len: 120, price_spread: 0.08}
+    C: {coverage: 0.60, title_max_len: 200, price_spread: 0.03}
+    D: {coverage: 0.50, title_max_len: 70,  price_spread: 0.10}
+
+ingest:
+  contracts_dir: conf/vendors
+  landing_dir: *landing_dir         # same folder the generator writes to
+  bronze_table_prefix: vendor_      # bronze.<prefix><vendor_id lowercased>
+  ops_tables:
+    batch_log: batch_log
+    schema_drift_log: schema_drift_log
+    silver_log: silver_log
+
+normalization:
+  # Trailing legal-entity words ignored when comparing brand names ("Acme Co." == "ACME").
+  brand_legal_suffixes: [inc, co, corp, llc, ltd, company, corporation]
+
+silver:
+  brand_aliases_path: *brand_aliases_path
+  stock_low_max_qty: 5        # qty 0 -> OUT, 1..this -> LOW, above -> IN
+  gtin_min_length: 8          # all-digit barcodes of this many digits or more are left-padded to 14
+  gtin_max_length: 14
+  tables:
+    vendor_product: vendor_product
+    vendor_offer: vendor_offer
+    quarantine: quarantine

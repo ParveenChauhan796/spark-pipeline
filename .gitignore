@@ -1,0 +1,13 @@
+data/
+.venv/
+venv/
+__pycache__/
+*.pyc
+.pytest_cache/
+*.egg-info/
+spark-warehouse/
+metastore_db/
+derby.log
+.idea/
+*.bundle
+.git-bundle-checkpoint

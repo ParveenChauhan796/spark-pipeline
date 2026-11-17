@@ -1,0 +1,11 @@
+vendor_id: C
+format: json            # JSON lines
+read_options: {}
+columns:
+  - {source: sku,      canonical: vendor_sku, type: string, required: true}
+  - {source: name,     canonical: title,      type: string, required: true}
+  - {source: brand,    canonical: brand,      type: string, required: false}
+  - {source: category, canonical: category,   type: string, required: false}
+  - {source: price,    canonical: price,      type: number, required: true}
+  - {source: quantity, canonical: qty,        type: number, required: false}
+  - {source: upc,      canonical: gtin,       type: string, required: false}

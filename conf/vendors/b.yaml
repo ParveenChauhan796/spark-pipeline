@@ -1,0 +1,18 @@
+vendor_id: B
+format: csv
+read_options:
+  header: true
+  delimiter: ";"
+  quote: '"'
+  escape: '"'
+  encoding: UTF-8
+  inferSchema: false
+columns:
+  - {source: item_id,      canonical: vendor_sku, type: string, required: true}
+  - {source: title,        canonical: title,      type: string, required: true, aliases: [name]}
+  - {source: manufacturer, canonical: brand,      type: string, required: false}
+  - {source: cat,          canonical: category,   type: string, required: false}
+  - {source: mpn,          canonical: model,      type: string, required: false}
+  - {source: price,        canonical: price,      type: string, required: true}
+  - {source: stock,        canonical: qty,        type: string, required: false}
+  - {source: ean,          canonical: gtin,       type: string, required: false}

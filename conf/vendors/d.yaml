@@ -1,0 +1,16 @@
+vendor_id: D
+format: json            # JSON lines, nested
+read_options: {}
+columns:
+  - {source: id,      canonical: vendor_sku, type: string, required: true}
+  - source: product
+    canonical: product
+    type: struct
+    required: true
+    fields: {name: string, brand: string, category: string, model: string}
+  - source: offer
+    canonical: offer
+    type: struct
+    required: true
+    fields: {price: number, qty: number}
+  - {source: barcode, canonical: gtin, type: string, required: false}

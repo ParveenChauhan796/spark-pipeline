@@ -1,0 +1,18 @@
+vendor_id: A
+format: csv
+read_options:          # passed to the Spark reader; CSV is always read as all strings
+  header: true
+  delimiter: ","
+  quote: '"'
+  escape: '"'          # the feed doubles quotes inside quoted fields ("" for an inch mark)
+  encoding: UTF-8
+  inferSchema: false
+columns:
+  - {source: sku,      canonical: vendor_sku, type: string, required: true}
+  - {source: title,    canonical: title,      type: string, required: true}
+  - {source: brand,    canonical: brand,      type: string, required: false}
+  - {source: category, canonical: category,   type: string, required: false}
+  - {source: model,    canonical: model,      type: string, required: false}
+  - {source: price,    canonical: price,      type: string, required: true}
+  - {source: qty,      canonical: qty,        type: string, required: false}
+  - {source: gtin,     canonical: gtin,       type: string, required: false}
