@@ -117,7 +117,7 @@ def test_drift_events_are_logged_and_batches_still_ingest(spark, env):
     put_jsonl(landing, "C", D1, C_ROWS)
     put_jsonl(landing, "C", D2, [{**r, "price": f"{r['price']:.2f}"} for r in C_ROWS])  # TYPE_CHANGED
 
-    outcomes = [bronze_outcome for bronze_outcome, _ in run_all(spark, config)]
+    outcomes = [r.bronze for r in run_all(spark, config)]
 
     assert [o.outcome for o in outcomes] == [bronze.SUCCESS] * 6
     assert drift_rows(spark, config) == [
@@ -140,7 +140,7 @@ def test_unknown_rename_of_required_column_quarantines_only_that_batch(spark, en
     put_jsonl(landing, "C", D1, C_ROWS)
     put_jsonl(landing, "C", D2, C_ROWS)
 
-    outcomes = {(b.vendor_id, b.batch_id): b for b, _ in run_all(spark, config)}
+    outcomes = {(r.bronze.vendor_id, r.bronze.batch_id): r.bronze for r in run_all(spark, config)}
 
     quarantined = outcomes[("A", D2)]
     assert quarantined.outcome == bronze.QUARANTINED and "vendor_sku" in quarantined.reason
@@ -178,7 +178,7 @@ def test_rerunning_everything_changes_nothing(spark, env):
         return (batch_rows(spark, config), drift_rows(spark, config), read(spark, config, "bronze", "vendor_a").count(), history)
 
     before = snapshot()
-    second = [bronze_outcome for bronze_outcome, _ in run_all(spark, config)]
+    second = [r.bronze for r in run_all(spark, config)]
 
     assert {o.outcome for o in second} == {bronze.SKIPPED}
     assert snapshot() == before

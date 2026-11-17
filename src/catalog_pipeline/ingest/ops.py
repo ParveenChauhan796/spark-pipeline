@@ -1,4 +1,4 @@
-"""ops.batch_log, ops.schema_drift_log and ops.silver_log: small Delta tables recording what each batch did.
+"""ops.batch_log, ops.schema_drift_log, ops.silver_log and ops.history_log: small Delta tables recording what each batch did.
 
 All logs keep exactly one set of rows per (vendor_id, batch_id): recording a batch again
 replaces its earlier rows instead of appending, so re-running a batch never changes the logs.
@@ -53,6 +53,20 @@ SILVER_LOG_SCHEMA = StructType(
         StructField("valid", LongType(), False),  # rows written to silver (latest row per key)
         StructField("quarantined", LongType(), False),
         StructField("deduped", LongType(), False),  # older duplicate rows dropped
+        StructField("processed_at", TimestampType(), False),
+    ]
+)
+
+HISTORY_LOG_SCHEMA = StructType(
+    [
+        StructField("vendor_id", StringType(), False),
+        StructField("batch_id", StringType(), False),
+        StructField("rows_in", LongType(), False),  # silver.vendor_offer rows of this batch
+        StructField("new", LongType(), False),
+        StructField("changed", LongType(), False),
+        StructField("unchanged", LongType(), False),
+        StructField("stale", LongType(), False),  # already in history (replay or crash retry)
+        StructField("table_version", LongType(), True),  # gold.offer_history version after this batch
         StructField("processed_at", TimestampType(), False),
     ]
 )
@@ -149,7 +163,26 @@ def record_silver(spark: SparkSession, config: dict, vendor_id: str, batch_id: s
 
 def silver_done(spark: SparkSession, config: dict, vendor_id: str, batch_id: str) -> bool:
     """True if silver already processed this batch (its counts row exists)."""
-    path = str(log_path("silver_log", config))
+    return _logged(spark, config, "silver_log", vendor_id, batch_id)
+
+
+def record_history(
+    spark: SparkSession, config: dict, vendor_id: str, batch_id: str, counts: dict[str, int], table_version: int | None
+) -> None:
+    check_batch_id(batch_id)
+    row = (vendor_id, batch_id, counts["rows_in"], counts["NEW"], counts["CHANGED"], counts["UNCHANGED"],
+           counts["STALE"], table_version, _now())
+    df = spark.createDataFrame([row], HISTORY_LOG_SCHEMA)
+    replace_where(df, log_path("history_log", config), f"vendor_id = '{vendor_id}' AND batch_id = '{batch_id}'")
+
+
+def history_done(spark: SparkSession, config: dict, vendor_id: str, batch_id: str) -> bool:
+    """True if the SCD2 history step already processed this batch."""
+    return _logged(spark, config, "history_log", vendor_id, batch_id)
+
+
+def _logged(spark: SparkSession, config: dict, name: str, vendor_id: str, batch_id: str) -> bool:
+    path = str(log_path(name, config))
     if not DeltaTable.isDeltaTable(spark, path):
         return False
     log = spark.read.format("delta").load(path)

@@ -57,7 +57,7 @@ def test_silver_end_to_end_reconciles_for_every_batch(spark, env):
 
     results = pipeline.run_all(spark, config)
 
-    assert [s.status for _, s in results] == [pipeline.DONE] * 3
+    assert [r.silver.status for r in results] == [pipeline.DONE] * 3
     log = silver_log(spark, config)
     assert log[("C", D1)] == (2, 2, 0, 0) and log[("D", D1)] == (1, 1, 0, 0)
     for (vendor, batch), (rows_in, valid, quarantined, deduped) in log.items():
@@ -112,7 +112,7 @@ def test_rerunning_silver_changes_nothing(spark, env):
     before = (versions(), silver_log(spark, config), silver(spark, config, "vendor_offer").count())
     second = pipeline.run_all(spark, config)
 
-    assert {s.status for _, s in second} == {pipeline.ALREADY_DONE}
+    assert {r.silver.status for r in second} == {pipeline.ALREADY_DONE}
     assert (versions(), silver_log(spark, config), silver(spark, config, "vendor_offer").count()) == before
 
 
@@ -151,7 +151,7 @@ def test_quarantined_bronze_batch_produces_no_silver(spark, env):
     put_csv(landing, "A", D1, ["item_sku"] + A_HEADER[1:], A_DAY1)  # required column renamed: bronze quarantines it
     put_jsonl(landing, "C", D1, C_ROWS)
 
-    results = {b.vendor_id: (b.outcome, s.status) for b, s in pipeline.run_all(spark, config)}
+    results = {r.bronze.vendor_id: (r.bronze.outcome, r.silver.status) for r in pipeline.run_all(spark, config)}
 
     assert results == {"A": ("QUARANTINED", pipeline.NOT_INGESTED), "C": ("SUCCESS", pipeline.DONE)}
     assert {r.vendor_id for r in silver(spark, config, "vendor_offer").collect()} == {"C"}

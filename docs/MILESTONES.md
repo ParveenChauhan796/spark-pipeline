@@ -129,14 +129,14 @@ worker and skips the shuffle.*
 ---
 
 ## M4: SCD2 with incremental loads (75 min)
-- [ ] `gold.offer_history`: `offer_key` (`vendor_id|vendor_sku`), `price`, `stock_status`,
+- [x] `gold.offer_history`: `offer_key` (`vendor_id|vendor_sku`), `price`, `stock_status`,
       `row_hash`, `valid_from`, `valid_to` (NULL while current, half-open interval), `is_current`
-- [ ] Change detection via `row_hash` (sha2 over price + stock_status)
-- [ ] Delta `MERGE` with a staged source: each changed row appears twice, once with the real key
+- [x] Change detection via `row_hash` (sha2 over price + stock_status)
+- [x] Delta `MERGE` with a staged source: each changed row appears twice, once with the real key
       (matches and closes the old version) and once with a NULL key (never matches, so inserts the
       new version). New offers don't match and insert. Unchanged rows match but fail the
       hash-differs condition, so nothing happens
-- [ ] Process batches in date order; skip batches already `SUCCESS` in `ops.batch_log`
+- [x] Process batches in date order; skip batches already `SUCCESS` in `ops.batch_log`
 
 *Spark concept: SCD2 (slowly changing dimension type 2) keeps history by closing the old row and
 inserting a new version instead of overwriting. Delta's `MERGE` is an atomic upsert: matching rows

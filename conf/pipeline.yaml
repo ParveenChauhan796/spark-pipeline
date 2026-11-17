@@ -70,6 +70,7 @@ ingest:
     batch_log: batch_log
     schema_drift_log: schema_drift_log
     silver_log: silver_log
+    history_log: history_log
 
 normalization:
   # Trailing legal-entity words ignored when comparing brand names ("Acme Co." == "ACME").
@@ -84,3 +85,7 @@ silver:
     vendor_product: vendor_product
     vendor_offer: vendor_offer
     quarantine: quarantine
+
+history:
+  tables:
+    offer_history: offer_history   # gold layer, SCD2 over price + stock_status (see docs/DECISIONS.md D10-D18)
