@@ -2,6 +2,7 @@ spark:
   app_name: catalog_pipeline
   master: "local[*]"        # local mode: all CPU cores of this machine act as the workers
   shuffle_partitions: 8     # Spark's default of 200 is far too many for small local data
+  driver_memory: 4g         # JVM heap. In local mode the driver AND executors share it (Spark's default is 1g)
   ui_enabled: true          # Spark UI at http://localhost:4040 while a session is running
   warehouse_dir: data/spark-warehouse
 
