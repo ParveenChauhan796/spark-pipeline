@@ -42,6 +42,10 @@ def gold(spark, config, name):
     return spark.read.format("delta").load(str(table_path("gold", config["er"]["tables"][name], config)))
 
 
+def gold_report(spark, config, name):
+    return spark.read.format("delta").load(str(table_path("gold", config["reports"]["tables"][name], config)))
+
+
 def er_log(spark, config):
     return spark.read.format("delta").load(str(ops.log_path("er_run_log", config))).collect()
 
@@ -68,6 +72,14 @@ def test_er_end_to_end_on_tiny_feeds(spark, env):  # noqa: F811
     assert (log.records, log.gtin_pairs, log.masters, log.same_vendor_clusters) == (5, 1, 3, 0)
     assert (log.predicted_pairs, log.true_pairs, log.correct_pairs) == (3, 3, 3)
     assert (log.precision, log.recall) == (1.0, 1.0)
+
+    # Reports: 4 vendors + CATALOGUE x 5 attributes; one day of data so no price changes; only the
+    # reservoir master is sold by 2+ vendors.
+    assert pipeline.build_reports(spark, config) == {
+        "attribute_completeness": 25, "price_changes_by_brand": 0, "price_spread": 1,
+    }
+    [spread] = gold_report(spark, config, "price_spread").collect()
+    assert (spread.master_id, spread.n_vendors, str(spread.min_price), str(spread.max_price)) == ("A|A-1", 3, "20.00", "21.00")
 
 
 def test_er_rerun_is_skipped_until_inputs_or_config_change(spark, env):  # noqa: F811

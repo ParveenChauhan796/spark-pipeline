@@ -20,6 +20,7 @@ from catalog_pipeline.ingest.bronze import SKIPPED, SUCCESS, BatchOutcome, bronz
 from catalog_pipeline.ingest.contracts import Contract, load_contracts
 from catalog_pipeline.match import candidates, cluster, evaluate, golden, score
 from catalog_pipeline.paths import resolve, table_path
+from catalog_pipeline.reports import reports
 from catalog_pipeline.spark import get_spark
 from catalog_pipeline.transform import silver as silver_tf
 
@@ -331,6 +332,29 @@ def resolve_entities(spark: SparkSession, config: dict, force: bool = False) -> 
     return ErOutcome(DONE, metrics)
 
 
+def build_reports(spark: SparkSession, config: dict) -> dict[str, int] | None:
+    """Rebuild every gold report table (overwrite, D36). Returns row counts, or None before ER has run."""
+    xref_path, dim_path = _gold_path(config, "product_xref"), _gold_path(config, "dim_product")
+    if not all(DeltaTable.isDeltaTable(spark, str(p)) for p in (xref_path, dim_path, _history_path(config))):
+        return None
+    cfg = config["reports"]
+    load = lambda path: spark.read.format("delta").load(str(path))  # noqa: E731
+    products, history = load(_silver_path(config, "vendor_product")), load(_history_path(config))
+    xref, dim = load(xref_path), load(dim_path)
+
+    built = {
+        "attribute_completeness": reports.attribute_completeness(products, dim, cfg["completeness_columns"]),
+        "price_changes_by_brand": reports.price_changes_by_brand(reports.price_changes(history), xref, dim),
+        "price_spread": reports.price_spread(history, xref, cfg["min_vendors_for_spread"]),
+    }
+    counts = {}
+    for name, df in built.items():
+        path = table_path("gold", cfg["tables"][name], config)
+        df.write.format("delta").mode("overwrite").option("overwriteSchema", True).save(str(path))
+        counts[name] = load(path).count()
+    return counts
+
+
 def _describe(result: BatchResult, seconds: float) -> str:
     b, s, h = result.bronze, result.silver, result.history
     drift = ", ".join(f"{d.drift_type}({d.source_column})" for d in b.drifts) or "-"
@@ -361,7 +385,7 @@ def _describe_er(outcome: ErOutcome) -> str:
 
 def main(argv: list[str] | None = None) -> None:
     parser = argparse.ArgumentParser(prog="catalog_pipeline.pipeline")
-    parser.add_argument("command", choices=["run-all", "er"])
+    parser.add_argument("command", choices=["run-all", "er", "reports"])
     parser.add_argument("--force", action="store_true", help="er: re-run even if the inputs did not change")
     args = parser.parse_args(argv)
 
@@ -371,8 +395,11 @@ def main(argv: list[str] | None = None) -> None:
     try:
         if args.command == "run-all":
             run_all(spark, config)
-        outcome = resolve_entities(spark, config, force=args.force)
-        print(_describe_er(outcome))
+        if args.command in ("run-all", "er"):
+            print(_describe_er(resolve_entities(spark, config, force=args.force)))
+        if args.command in ("run-all", "reports"):
+            counts = build_reports(spark, config)
+            print("reports NOT_READY (run er first)" if counts is None else f"reports DONE: {counts}")
     finally:
         spark.stop()
 

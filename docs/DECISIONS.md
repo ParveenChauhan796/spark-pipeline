@@ -255,3 +255,46 @@ alternative would be, and where to change it.
   stops the chains of wrong edges that merged clusters.
 - **Alternative:** Turn it off with `er.scoring.best_match_per_vendor: false`.
 - **Where:** `match/score.py` (`best_match_per_vendor`, `combine_edges`).
+
+## M6: Reports
+
+### D32. The completeness report is long-format and generated from a column list
+- **Status:** Accepted 2026-11-17
+- **Decision:** `gold.rpt_attribute_completeness` has one row per (scope, attribute): `scope` is a
+  vendor id, or `CATALOGUE` for `gold.dim_product`, plus non_null, total and completeness =
+  `count(col)/count(*)`. The attributes come from `reports.completeness_columns` (title, brand,
+  category, model, gtin14) and are built in a loop; adding a column to the list adds rows.
+- **Alternative:** Wide format (one column per attribute), which is easier to eyeball but changes shape when the list changes.
+- **Where:** `reports/reports.py` (`attribute_completeness`).
+
+### D33. A price change = consecutive history versions with different prices
+- **Status:** Accepted 2026-11-17
+- **Decision:** `lag(price)` over each offer's SCD2 versions, ordered by `valid_from`. A version counts as a
+  change only if its price differs from the previous version's, so stock-only versions are ignored. The day is
+  the new version's `valid_from`. An offer's first version is not a change.
+- **Where:** `reports/reports.py` (`price_changes`).
+
+### D34. Brand in the price report = the golden brand of the offer's current master
+- **Status:** Accepted 2026-11-17
+- **Decision:** offer -> `product_xref` -> `dim_product.brand`. A master with no brand is reported as `UNKNOWN`.
+  It uses today's ER result, so history is regrouped if ER changes later (D26).
+- **Alternative:** The vendor's own brand on the offer (no ER dependency, but aliases split brands).
+- **Where:** `reports/reports.py` (`price_changes_by_brand`).
+
+### D35. Average % change is an unweighted mean per (brand, day)
+- **Status:** Accepted 2026-11-17
+- **Decision:** `avg((new - old) / old * 100)` over that brand's changes that day, plus counts of changes,
+  increases and decreases. A cheap item moving 10% counts the same as an expensive one.
+- **Where:** `reports/reports.py` (`price_changes_by_brand`).
+
+### D36. Reports are fully rebuilt (overwritten) at the end of every run
+- **Status:** Accepted 2026-11-17
+- **Decision:** Reports are rebuilt after ER in `run-all`, and also by a separate `reports` command. They're
+  small and deterministic, so a rebuild gives the same tables, with no skip logic needed.
+- **Where:** `pipeline.py` (`build_reports`).
+
+### D37. Price spread only covers masters offered by 2+ vendors, using current prices
+- **Status:** Accepted 2026-11-17
+- **Decision:** `rpt_price_spread`: per master, n_vendors, min/max current price, spread_pct =
+  (max - min) / min * 100. Masters sold by a single vendor have no spread and are left out.
+- **Where:** `reports/reports.py` (`price_spread`).

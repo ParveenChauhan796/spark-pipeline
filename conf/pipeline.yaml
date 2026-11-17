@@ -109,3 +109,11 @@ er:
   label_propagation_rounds: 3      # D25
   golden:
     vendor_priority: [A, B, D, C]  # tie-break when two records are equally complete (D27)
+
+reports:
+  tables:                          # gold layer, fully rebuilt every run (D36)
+    attribute_completeness: rpt_attribute_completeness
+    price_changes_by_brand: rpt_price_changes_by_brand
+    price_spread: rpt_price_spread
+  completeness_columns: [title, brand, category, model, gtin14]   # D32: one report row per column per scope
+  min_vendors_for_spread: 2        # D37: masters sold by fewer vendors have no spread

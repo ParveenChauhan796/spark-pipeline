@@ -176,12 +176,12 @@ row per `offer_key`, no overlapping intervals, replaying a batch is a no-op.
 ---
 
 ## M6: Reports (30 min)
-- [ ] `gold.rpt_attribute_completeness`: `count(col)/count(*)` generated for all attribute columns,
+- [x] `gold.rpt_attribute_completeness`: `count(col)/count(*)` generated for all attribute columns,
       per vendor and for the merged catalogue
-- [ ] `gold.rpt_price_changes_by_brand`: `lag()` over `offer_history` per `offer_key` to get the
+- [x] `gold.rpt_price_changes_by_brand`: `lag()` over `offer_history` per `offer_key` to get the
       previous price, join to xref and master brand, aggregate per brand per day (changes, ups,
       downs, average % change)
-- [ ] Stretch: `rpt_price_spread` (cross-vendor min/max price per master product)
+- [x] Stretch: `rpt_price_spread` (cross-vendor min/max price per master product)
 
 **Done when:** tests on a tiny fixture match hand-computed values.
 
