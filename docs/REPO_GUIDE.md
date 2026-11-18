@@ -146,6 +146,7 @@ One module per stage. Each reads its inputs, calls the pure functions, writes th
 | File | Purpose |
 |---|---|
 | `OVERVIEW.md` | The use case and pain points for non-technical readers |
+| `DOMAIN.md` | Domain model: bounded contexts, context map, what each context owns and guarantees, glossary |
 | `REPO_GUIDE.md` | This file |
 | `KEY_COMPONENTS.md` | The handful of functions that do the real work, and how they work |
 | `DECISIONS.md` | Numbered decision log (D1...): what was decided, why, the alternative, where in the code |

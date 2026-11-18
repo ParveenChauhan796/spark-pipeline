@@ -202,11 +202,11 @@ query execution) can adjust plans at runtime.*
 ---
 
 ## M8: README (30 min)
-- [ ] Mermaid architecture diagram
-- [ ] Quickstart
-- [ ] Results table (headline numbers below)
-- [ ] Sample reports
-- [ ] Limitations section (see below)
+- [x] Mermaid architecture diagram
+- [x] Quickstart
+- [x] Results table (headline numbers below)
+- [x] Sample reports
+- [x] Limitations section (see below)
 
 **Done when:** `make setup && make data && make run-all && make test` works from a fresh clone.
 
