@@ -1,6 +1,6 @@
-"""Rebuild the gold report tables (the report logic is reports/reports.py)."""
+"""Rebuild the gold report tables, and read them back for printing (the report logic is reports/reports.py)."""
 from delta.tables import DeltaTable
-from pyspark.sql import SparkSession
+from pyspark.sql import DataFrame, SparkSession
 
 from catalog_pipeline.paths import er_table_path, offer_history_path, silver_table_path, table_path
 from catalog_pipeline.reports import reports
@@ -27,3 +27,15 @@ def build_reports(spark: SparkSession, config: dict) -> dict[str, int] | None:
         df.write.format("delta").mode("overwrite").option("overwriteSchema", True).save(str(path))
         counts[name] = load(path).count()
     return counts
+
+
+def report_previews(spark: SparkSession, config: dict) -> dict[str, DataFrame] | None:
+    """The top rows of each report table (rows and order from `reports.show`), or None before they exist."""
+    cfg = config["reports"]
+    paths = {name: table_path("gold", table, config) for name, table in cfg["tables"].items()}
+    if not all(DeltaTable.isDeltaTable(spark, str(p)) for p in paths.values()):
+        return None
+    return {
+        name: reports.top_rows(spark.read.format("delta").load(str(path)), **cfg["show"][name])
+        for name, path in paths.items()
+    }

@@ -1,10 +1,10 @@
-"""Pipeline CLI: `python -m catalog_pipeline.pipeline {run-all,er,reports}`."""
+"""Pipeline CLI: `python -m catalog_pipeline.pipeline {run-all,er,reports,show}`."""
 import argparse
 
 from catalog_pipeline.config import load_config
 from catalog_pipeline.pipeline.er import resolve_entities
 from catalog_pipeline.pipeline.outcomes import ErOutcome
-from catalog_pipeline.pipeline.reports import build_reports
+from catalog_pipeline.pipeline.reports import build_reports, report_previews
 from catalog_pipeline.pipeline.run import run_all
 from catalog_pipeline.spark import get_spark
 
@@ -24,7 +24,7 @@ def _describe_er(outcome: ErOutcome) -> str:
 
 def main(argv: list[str] | None = None) -> None:
     parser = argparse.ArgumentParser(prog="catalog_pipeline.pipeline")
-    parser.add_argument("command", choices=["run-all", "er", "reports"])
+    parser.add_argument("command", choices=["run-all", "er", "reports", "show"])
     parser.add_argument("--force", action="store_true", help="er: re-run even if the inputs did not change")
     args = parser.parse_args(argv)
 
@@ -39,6 +39,13 @@ def main(argv: list[str] | None = None) -> None:
         if args.command in ("run-all", "reports"):
             counts = build_reports(spark, config)
             print("reports NOT_READY (run er first)" if counts is None else f"reports DONE: {counts}")
+        if args.command == "show":
+            previews = report_previews(spark, config)
+            if previews is None:
+                print("no reports yet (run `make run-all` first)")
+            for name, df in (previews or {}).items():
+                print(f"\n== gold.{config['reports']['tables'][name]} ==")
+                df.show(config["reports"]["show"][name]["n"], truncate=False)
     finally:
         spark.stop()
 

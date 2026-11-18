@@ -74,3 +74,8 @@ def price_spread(history: DataFrame, xref: DataFrame, min_vendors: int) -> DataF
         .filter(F.col("n_vendors") >= min_vendors)
         .withColumn("spread_pct", ((F.col("max_price") - F.col("min_price")) / F.col("min_price") * 100).cast("double"))
     )
+
+
+def top_rows(df: DataFrame, order_by: list[str], descending: bool, n: int) -> DataFrame:
+    """The first n rows of a report, sorted on order_by (all ascending or all descending), for printing."""
+    return df.orderBy(*[F.col(c).desc() if descending else F.col(c).asc() for c in order_by]).limit(n)

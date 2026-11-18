@@ -15,12 +15,12 @@ from catalog_pipeline.pipeline.outcomes import (
     HistoryOutcome,
     SilverOutcome,
 )
-from catalog_pipeline.pipeline.reports import build_reports
+from catalog_pipeline.pipeline.reports import build_reports, report_previews
 from catalog_pipeline.pipeline.run import discover_batches, run_all
 from catalog_pipeline.pipeline.silver import load_brand_aliases, silver_batch
 
 __all__ = [
     "ALREADY_DONE", "DONE", "NOT_INGESTED", "NOT_READY", "BatchResult", "ErOutcome", "HistoryOutcome",
     "SilverOutcome", "build_reports", "discover_batches", "history_batch", "load_brand_aliases",
-    "load_ground_truth", "resolve_entities", "run_all", "silver_batch", "table_version",
+    "load_ground_truth", "report_previews", "resolve_entities", "run_all", "silver_batch", "table_version",
 ]

@@ -65,26 +65,71 @@ outside `ingest/` that reads or writes the lake. Everything in `transform/`, `hi
 
 ## Quickstart
 
-**Prerequisites:**
-- Linux or macOS with Python 3.11+ and **Java 17**. The Makefile picks `/usr/lib/jvm/java-17-openjdk-*`;
-  override with `make <target> JAVA17_HOME=/path/to/jdk-17`.
-- Internet on first run, for PyPI, the Hugging Face source file and the Delta jars from Maven Central.
+### What you need (no Spark install)
+Spark is **not** installed separately. `make setup` runs `pip install pyspark`, and that Python package
+contains the whole Spark engine. The pipeline runs it in **local mode**: Spark's driver and executors run
+as threads inside one Java process on your machine, using all cores. No cluster, no Hadoop, no Docker.
+
+| Need | Why | How to get it |
+|---|---|---|
+| Python 3.11+ | runs the pipeline code | `python3.11 --version`; another name: `make setup PYTHON=python3.12` |
+| **Java 17** (JDK) | Spark runs on the JVM | Ubuntu/Debian: `sudo apt install openjdk-17-jdk` · Fedora: `sudo dnf install java-17-openjdk-devel` · macOS: `brew install openjdk@17` |
+| Internet, first run only | PyPI packages, the Hugging Face source file, and the Delta Lake jars (Spark downloads them from Maven Central into `~/.ivy2` on the first session) | |
+| ~4 GB free RAM, ~2 GB disk | Spark driver heap is 4g (`conf/pipeline.yaml`) | |
+
+The Makefile finds Java 17 by itself (`/usr/lib/jvm/java-17-openjdk-*` on Linux, `/usr/libexec/java_home -v 17`
+on macOS) and uses it only for this project, so your default `java` can stay another version. If it's
+somewhere else: `make <target> JAVA17_HOME=/path/to/jdk-17`.
+
+### Run it
 
 ```bash
-make setup     # create .venv, install pyspark 3.5.9 + delta-spark 3.3.3, pyyaml, requests, pytest
-make data      # download ~100k Appliances records, generate vendor feeds + ground truth (seeded, deterministic)
-make run-all   # batches in date order -> bronze -> silver -> SCD2 history -> entity resolution -> reports
-make test      # 124 tests (unit + integration), ~7 min
-make bench     # optimization experiments (~15 min), rewrites docs/RESULTS.md
+git clone <repo> && cd pipeline
+make setup          # create .venv, install pyspark 3.5.9 + delta-spark 3.3.3, pyyaml, requests, pytest
+make data           # download ~100k Appliances records, generate vendor feeds + ground truth (seeded, deterministic)
+make run-all        # batches in date order -> bronze -> silver -> SCD2 history -> entity resolution -> reports (~4 min)
+make reports-show   # print the top rows of each report table
+make test           # 125 tests (unit + integration), ~7 min; needs only make setup, not make data
+make bench          # optimization experiments (~15 min), rewrites docs/RESULTS.md
 ```
 
-Other commands:
+A fresh clone running `setup`, `data`, `run-all` and `test` took 13.5 minutes on the machine in
+[docs/RESULTS.md](docs/RESULTS.md).
+
+### Viewing the reports
+
+`make reports-show` prints each report: all of `rpt_attribute_completeness`, and the top 10 rows of
+`rpt_price_changes_by_brand` (most changes) and `rpt_price_spread` (widest spread). Rows and sort order are
+set under `reports.show` in `conf/pipeline.yaml`.
+
+The tables are Delta tables (Parquet files plus a transaction log), so open them with Spark, not a text
+editor. For your own queries, start a Python shell with Java 17 on the path:
+
+```bash
+JAVA_HOME=/usr/lib/jvm/java-17-openjdk-amd64 .venv/bin/python   # your Java 17 path
+```
+
+```python
+from catalog_pipeline.spark import get_spark
+spark = get_spark()                        # local Spark with Delta enabled, settings from conf/pipeline.yaml
+spread = spark.read.format("delta").load("data/lake/gold/rpt_price_spread")
+spread.filter("n_vendors = 4").orderBy("spread_pct", ascending=False).show(20)
+
+# Any table works the same way, e.g. one product's full price history:
+history = spark.read.format("delta").load("data/lake/gold/offer_history")
+history.filter("offer_key = 'A|A-7464138'").orderBy("valid_from").show()
+```
+
+While a Spark session is open, its web UI (jobs, stages, query plans) is at http://localhost:4040.
+
+### Other commands
 
 | Command | What it does |
 |---|---|
 | `make run-all` again | Changes nothing: finished batches are skipped, and ER is skipped while its inputs and config are unchanged |
-| `.venv/bin/python -m catalog_pipeline.pipeline er --force` | Re-runs entity resolution only |
-| `.venv/bin/python -m catalog_pipeline.pipeline reports` | Rebuilds the report tables only |
+| `.venv/bin/python -m catalog_pipeline.pipeline er --force` | Re-runs entity resolution only (Java 17 on the path) |
+| `.venv/bin/python -m catalog_pipeline.pipeline reports` | Rebuilds the report tables only (Java 17 on the path) |
+| `rm -rf data/lake && make run-all` | Rebuilds the whole lake from the landed feeds |
 
 All tables are Delta tables under `data/lake/{bronze,silver,gold,ops}`. All settings live in
 `conf/pipeline.yaml`, and the vendor contracts in `conf/vendors/`.

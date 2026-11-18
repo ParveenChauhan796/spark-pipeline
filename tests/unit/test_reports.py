@@ -85,3 +85,9 @@ def test_price_spread_uses_current_prices_of_multi_vendor_masters(history, xref)
            for r in reports.price_spread(history, xref, 2).collect()]
 
     assert got == [("M1", 2, 2, "11.00", "15.00", round(4 / 11 * 100, 4))]  # M2, M3 have one vendor each
+
+
+def test_top_rows_sorts_and_limits(spark):
+    df = spark.createDataFrame([("x", 1), ("y", 3), ("z", 2)], "k string, v int")
+    assert [r.k for r in reports.top_rows(df, ["v"], True, 2).collect()] == ["y", "z"]
+    assert [r.k for r in reports.top_rows(df, ["v"], False, 2).collect()] == ["x", "z"]

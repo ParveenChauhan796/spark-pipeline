@@ -81,6 +81,13 @@ def test_er_end_to_end_on_tiny_feeds(spark, env):  # noqa: F811
     [spread] = gold_report(spark, config, "price_spread").collect()
     assert (spread.master_id, spread.n_vendors, str(spread.min_price), str(spread.max_price)) == ("A|A-1", 3, "20.00", "21.00")
 
+    previews = pipeline.report_previews(spark, config)
+    assert {name: df.count() for name, df in previews.items()} == {
+        "attribute_completeness": 25, "price_changes_by_brand": 0, "price_spread": 1,
+    }
+    first = previews["attribute_completeness"].first()
+    assert (first.scope, first.attribute) == ("A", "brand")
+
 
 def test_er_rerun_is_skipped_until_inputs_or_config_change(spark, env):  # noqa: F811
     config, landing = er_env(env)

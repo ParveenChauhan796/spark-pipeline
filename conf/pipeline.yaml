@@ -118,6 +118,10 @@ reports:
     price_spread: rpt_price_spread
   completeness_columns: [title, brand, category, model, gtin14]   # D32: one report row per column per scope
   min_vendors_for_spread: 2        # D37: masters sold by fewer vendors have no spread
+  show:                            # `make reports-show`: rows printed per report and their sort order
+    attribute_completeness: {order_by: [scope, attribute], descending: false, n: 25}
+    price_changes_by_brand: {order_by: [changes], descending: true, n: 10}
+    price_spread: {order_by: [spread_pct], descending: true, n: 10}
 
 bench:                             # `make bench` (M7, D38-D43). Each variant: fresh process, own lake under root
   root: data/bench

@@ -31,7 +31,7 @@ The `pipeline/` package drives all of this. `bench.py` times it.
 | Path | Why it exists |
 |---|---|
 | `CLAUDE.md` | The project brief and hard rules (no UDFs, no inferSchema, config-driven, idempotent, test rules) |
-| `Makefile` | The only commands you need: `setup`, `data`, `run-all`, `test`, `bench`. Pins Java 17 for this project only |
+| `Makefile` | The only commands you need: `setup`, `data`, `run-all`, `reports-show`, `test`, `bench`. Pins Java 17 for this project only (Linux JVM dir or macOS `java_home`) |
 | `pyproject.toml` | Package metadata and pinned dependencies (pyspark 3.5.9 + delta-spark 3.3.3, a compatible pair). `pip install -e .` makes `catalog_pipeline` importable |
 | `.gitignore` | Keeps `data/` (lake, feeds, source download), the venv, IDE files and bundles out of git |
 | `conf/` | All settings. Nothing tunable is hard-coded in Python |
@@ -123,7 +123,7 @@ One module per stage. Each reads its inputs, calls the pure functions, writes th
 | `run.py` | `discover_batches`, and `run_all` (every landed batch through bronze, silver and history, oldest day first) |
 | `er.py` | `resolve_entities` (the full ER chain, metrics and the skip check) and `load_ground_truth` |
 | `reports.py` | `build_reports` (overwrites the three report tables) |
-| `cli.py` and `__main__.py` | `python -m catalog_pipeline.pipeline {run-all, er [--force], reports}` |
+| `cli.py` and `__main__.py` | `python -m catalog_pipeline.pipeline {run-all, er [--force], reports, show}` (`show` prints the top rows of each report, for `make reports-show`) |
 | `__init__.py` | Re-exports the public functions, so callers write `from catalog_pipeline import pipeline; pipeline.run_all(...)` |
 
 ## `tests/`

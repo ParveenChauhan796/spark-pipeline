@@ -46,6 +46,7 @@ Note: the first Delta session downloads Delta jars from Maven Central (needs int
 - `make setup`    create venv, install deps
 - `make data`     download source slice and generate vendor feeds + ground truth
 - `make run-all`  run batches in date order through the whole pipeline
+- `make reports-show` print the top rows of each report table
 - `make test`     run pytest
 - `make bench`    run optimization experiments and write docs/RESULTS.md
 (Add each target only when its milestone lands; don't stub targets that do nothing.)
