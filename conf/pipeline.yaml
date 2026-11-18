@@ -83,6 +83,7 @@ silver:
   stock_low_max_qty: 5        # qty 0 -> OUT, 1..this -> LOW, above -> IN
   gtin_min_length: 8          # all-digit barcodes of this many digits or more are left-padded to 14
   gtin_max_length: 14
+  broadcast_aliases: true     # D40: broadcast the tiny alias table in the brand join (the bench turns it off)
   tables:
     vendor_product: vendor_product
     vendor_offer: vendor_offer
@@ -117,3 +118,13 @@ reports:
     price_spread: rpt_price_spread
   completeness_columns: [title, brand, category, model, gtin14]   # D32: one report row per column per scope
   min_vendors_for_spread: 2        # D37: masters sold by fewer vendors have no spread
+
+bench:                             # `make bench` (M7, D38-D43). Each variant: fresh process, own lake under root
+  root: data/bench
+  results_path: docs/RESULTS.md
+  repeats: 1                       # runs per variant; the fastest is reported (D38)
+  variants:                        # D39. broadcast=false also sets spark.sql.autoBroadcastJoinThreshold=-1
+    baseline:   {shuffle_partitions: 200, broadcast: false}
+    partitions: {shuffle_partitions: 8,   broadcast: false}
+    tuned:      {shuffle_partitions: 8,   broadcast: true}
+  blocking_variant: tuned          # E1 runs on this variant's lake (D41)

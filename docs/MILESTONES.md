@@ -193,9 +193,9 @@ BroadcastHashJoin). The Spark UI at `localhost:4040` shows stages, shuffle sizes
 `spark.sql.shuffle.partitions` defaults to 200, far too many for local small data. AQE (adaptive
 query execution) can adjust plans at runtime.*
 
-- [ ] **E1:** brand-only blocking vs final blocking. Report candidate pairs, pair recall, runtime
-- [ ] **E2:** shuffle partitions 200 vs ~8, plus broadcast on the alias table, for a full run
-- [ ] `make bench` writes before/after tables and machine specs to `docs/RESULTS.md`
+- [x] **E1:** brand-only blocking vs final blocking. Report candidate pairs, pair recall, runtime
+- [x] **E2:** shuffle partitions 200 vs ~8, plus broadcast on the alias table, for a full run
+- [x] `make bench` writes before/after tables and machine specs to `docs/RESULTS.md`
 
 **Done when:** before/after tables are filled in.
 

@@ -73,7 +73,7 @@ alternative would be, and where to change it.
 ### D8. `silver.vendor_product` never moves backwards in time
 - **Status:** Accepted (M3)
 - **Decision:** The MERGE updates a product only if `s.last_batch_date >= t.last_batch_date`.
-- **Where:** `pipeline.py` (`_upsert_products`).
+- **Where:** `pipeline/silver.py` (`_upsert_products`).
 
 ### D9. Delta snapshotPartitions is left at the default (50) in production
 - **Status:** Accepted (M3). Tests use 2. M7 measures the effect.
@@ -107,7 +107,7 @@ alternative would be, and where to change it.
 ### D13. `run_all` returns `BatchResult(bronze, silver, history)` per batch
 - **Status:** Accepted 2026-11-17
 - **Decision:** A dataclass replaces the old `(bronze, silver)` tuples. Later stages add fields here.
-- **Where:** `pipeline.py`.
+- **Where:** `pipeline/outcomes.py`, `pipeline/run.py`.
 
 ### D14. An offer that's absent from a later batch is unchanged, not delisted
 - **Status:** Accepted 2026-11-17
@@ -121,7 +121,7 @@ alternative would be, and where to change it.
   partition column could prune, and partitioning would only create small files.
 - **Scaling path:** Z-order or liquid clustering on `offer_key` first. Then split the table into current and
   archive tables. Use a coarse date partition only at terabyte scale. M7 may measure `OPTIMIZE ZORDER BY offer_key`.
-- **Where:** `pipeline.py` (`history_batch`).
+- **Where:** `pipeline/history.py` (`history_batch`).
 
 ### D16. The history table also stores `vendor_id` and `vendor_sku`
 - **Status:** Accepted 2026-11-17
@@ -133,7 +133,7 @@ alternative would be, and where to change it.
 - **Status:** Accepted 2026-11-17
 - **Decision:** The staged source contains only NEW and CHANGED offers, which keeps the MERGE small.
   The MERGE still has a `row_hash` differs condition as a safety net.
-- **Where:** `history/scd2.py` (`stage_merge`), `pipeline.py` (`_merge_history`).
+- **Where:** `history/scd2.py` (`stage_merge`), `pipeline/history.py` (`_merge_history`).
 
 ### D18. A crash retry records different log counts
 - **Status:** Accepted 2026-11-17
@@ -141,7 +141,7 @@ alternative would be, and where to change it.
   retry finds the rows already applied. They are counted as `stale`, not `new`/`changed`. The history table
   is identical; only that batch's log counts differ from a clean run.
 - **Alternative:** Read the MERGE's own metrics from `DESCRIBE HISTORY` on retry.
-- **Where:** `pipeline.py` (`history_batch`).
+- **Where:** `pipeline/history.py` (`history_batch`).
 
 ## M5: Entity resolution
 
@@ -153,7 +153,7 @@ alternative would be, and where to change it.
 - **Why:** At this size a full run takes about a minute, and incremental ER (matching only new records
   against existing masters) is a project of its own.
 - **Alternative:** Incremental ER: block only new or changed records against the existing master records.
-- **Where:** `pipeline.py` (`resolve_entities`).
+- **Where:** `pipeline/er.py` (`resolve_entities`).
 
 ### D20. Only cross-vendor pairs can match, GTIN included
 - **Status:** Accepted 2026-11-17
@@ -234,7 +234,7 @@ alternative would be, and where to change it.
   `gold.offer_history` that a run read, plus a sha256 of the `er` config section. If a logged run has
   the same three values, ER is skipped (`er --force` re-runs anyway). A re-run overwrites the gold tables
   with identical output, because everything is deterministic.
-- **Where:** `pipeline.py` (`resolve_entities`), `ingest/ops.py`.
+- **Where:** `pipeline/er.py` (`resolve_entities`), `ingest/ops.py`.
 
 ### D30. Prices too far apart never match
 - **Status:** Accepted 2026-11-17 (added during tuning)
@@ -291,10 +291,73 @@ alternative would be, and where to change it.
 - **Status:** Accepted 2026-11-17
 - **Decision:** Reports are rebuilt after ER in `run-all`, and also by a separate `reports` command. They're
   small and deterministic, so a rebuild gives the same tables, with no skip logic needed.
-- **Where:** `pipeline.py` (`build_reports`).
+- **Where:** `pipeline/reports.py` (`build_reports`).
 
 ### D37. Price spread only covers masters offered by 2+ vendors, using current prices
 - **Status:** Accepted 2026-11-17
 - **Decision:** `rpt_price_spread`: per master, n_vendors, min/max current price, spread_pct =
   (max - min) / min * 100. Masters sold by a single vendor have no spread and are left out.
 - **Where:** `reports/reports.py` (`price_spread`).
+
+## M7: Optimize and measure
+
+### D38. Each bench variant runs in a fresh process against its own lake
+- **Status:** Accepted 2026-11-18
+- **Decision:** `make bench` starts every variant as a separate `python -m catalog_pipeline.bench` subprocess
+  (new JVM) with the lake root set to `data/bench/<variant>`, wiped at the start of the variant. The real
+  `data/lake` is never touched. Each variant runs once (`bench.repeats: 1`) to keep the bench at about 20-30 min.
+- **Why:** A shared JVM warms up (JIT, cached jars, OS file cache), which would favour whichever variant runs later.
+- **Alternative:** Run all variants in one session (faster, but biased), or take the best of 3 repeats (fairer, about 3x slower).
+- **Where:** `bench.py`, `conf/pipeline.yaml` (`bench:`).
+
+### D39. E2 compares three full-run variants, with AQE left on
+- **Status:** Accepted 2026-11-18
+- **Decision:** `baseline` uses 200 shuffle partitions and no broadcast. `partitions` uses 8 partitions and no
+  broadcast. `tuned` uses 8 partitions with broadcast, which is the production config. AQE stays on in all three
+  (it's on by default in Spark 3.5). AQE merges small shuffle partitions at runtime, so the 200-vs-8 gap will be
+  smaller than it would be without it. RESULTS.md says so. The AQE-off variant was skipped, as recommended in the plan the user approved.
+- **Alternative:** Add an AQE-off variant to show the raw cost of 200 partitions (one more full run).
+- **Where:** `conf/pipeline.yaml` (`bench.variants`), `bench.py`.
+
+### D40. The alias-join broadcast hint becomes a config flag
+- **Status:** Accepted 2026-11-18
+- **Decision:** `silver.broadcast_aliases` (default `true`) controls the `F.broadcast` hint in
+  `canonicalize_brand`. "No broadcast" variants set it to false and also set
+  `spark.sql.autoBroadcastJoinThreshold=-1`, so Spark can't broadcast on its own either. The bench captures the
+  physical plan of the alias join and records which join operator was used (BroadcastHashJoin or SortMergeJoin).
+- **Why:** The hint is currently hard-coded, so it can't be switched off to measure what it buys.
+- **Where:** `transform/brand.py`, `transform/silver.py`, `conf/pipeline.yaml`.
+
+### D41. E1 measures blocking only, on the tuned variant's silver data
+- **Status:** Accepted 2026-11-18
+- **Decision:** It compares brand-only blocking with the final blocking (model token + title prefix), using the
+  same `max_block_size`. It reports:
+  - candidate pairs, both as kept and uncapped (the sum of n(n-1)/2 per block)
+  - blocks dropped
+  - pair recall: the share of true cross-vendor pairs in the ground truth that appear as candidates, with and
+    without the GTIN pairs
+  - the runtime of candidate generation
+
+  Full scoring and clustering run only for the final blocking (precision/recall come from `ops.er_run_log`).
+- **Alternative:** Run full ER with brand-only blocking too, which needs a refactor of `resolve_entities`.
+- **Where:** `bench.py` (blocks from `candidates.block_key_passes`, the same function ER uses).
+
+### D42. Rows/sec is measured for three coarse stages
+- **Status:** Accepted 2026-11-18
+- **Decision:**
+  - `batches` (bronze, silver and history for all 12 batches): rows = landed rows read
+  - `er`: rows = ER input records
+  - `reports`: rows = history rows
+
+  Each stage's wall time comes from `time.perf_counter()` around the existing pipeline calls. Machine specs (CPU
+  model, cores, RAM, OS, Python, Java, Spark and Delta versions) are read from `/proc`, `platform` and the session.
+- **Alternative:** Per-layer timings (bronze, silver and history separately), which need timing hooks inside `run_all`.
+- **Where:** `bench.py`.
+
+### D43. `docs/RESULTS.md` is generated, overwritten and committed
+- **Status:** Accepted 2026-11-18
+- **Decision:** `make bench` writes the whole file: machine specs, the E2 table (runtime per stage and
+  variant, join operator), the E1 table, rows/sec and ER precision/recall. The raw numbers also go to
+  `data/bench/results.json`. OPTIMIZE/ZORDER (D15) and snapshotPartitions (D9) are not measured and are left
+  as future work.
+- **Where:** `bench.py`, `docs/RESULTS.md`.

@@ -89,6 +89,15 @@ def title_prefix_keys(records: DataFrame, n_tokens: int) -> DataFrame:
     )
 
 
+def block_key_passes(records: DataFrame, blocking: dict) -> list[DataFrame]:
+    """Block keys of every blocking pass, in order: pass 1 (brand, model-like token), pass 2 (brand,
+    title prefix). `blocking` is the er.blocking config. ER and the bench both build blocks from here."""
+    return [
+        model_token_keys(records, blocking["min_token_length"]),
+        title_prefix_keys(records, blocking["title_prefix_tokens"]),
+    ]
+
+
 def block_pairs(keys: DataFrame, max_block_size: int) -> tuple[DataFrame, DataFrame]:
     """Candidate pairs from block keys, plus the oversized blocks that were skipped.
 

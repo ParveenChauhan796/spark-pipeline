@@ -64,7 +64,7 @@ def classify(df: DataFrame, aliases: DataFrame, config: dict) -> DataFrame:
             "gtin14", gtin.to_gtin14(F.col("gtin"), silver_cfg["gtin_min_length"], silver_cfg["gtin_max_length"])
         )
     )
-    cleaned = brand.canonicalize_brand(cleaned, aliases, suffixes)
+    cleaned = brand.canonicalize_brand(cleaned, aliases, suffixes, silver_cfg["broadcast_aliases"])
 
     # First failing check wins. Bad rows are kept (not dropped) and routed to silver.quarantine.
     reason = (
