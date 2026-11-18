@@ -19,7 +19,10 @@ When something breaks, explain the cause in plain terms BEFORE fixing it.
   Single exception: JSON reads in ingest/ may infer a schema ONLY to get the observed schema for
   drift detection. That inferred schema never defines a table.
 - No .collect() / .toPandas() on anything but tiny results (reports for printing, tests).
-- Transform functions are pure: `def f(df: DataFrame, ...) -> DataFrame`. I/O lives only in ingest/ and pipeline.py.
+- Transform functions are pure: `def f(df: DataFrame, ...) -> DataFrame`. I/O lives only in ingest/ and the
+  pipeline/ package (one orchestration module per stage; no I/O in transform/, history/, match/, reports/).
+  The standalone tools generate/ (writes the synthetic feeds) and bench.py (benchmark lakes, docs/RESULTS.md)
+  do their own I/O and are never imported by pipeline code.
 - No hardcoded paths or thresholds: use conf/pipeline.yaml, conf/vendors/*.yaml, and paths.py.
 - Every batch run is idempotent. Re-running a batch must not change results.
 - Never commit data/. Seeded randomness everywhere (generation must be deterministic).
@@ -48,7 +51,7 @@ Note: the first Delta session downloads Delta jars from Maven Central (needs int
 (Add each target only when its milestone lands; don't stub targets that do nothing.)
 
 ## Layout
-src/catalog_pipeline/{generate,ingest,transform,history,match,reports}, pipeline.py (CLI),
+src/catalog_pipeline/{generate,ingest,transform,history,match,reports}, pipeline/ (per-stage orchestration + CLI), bench.py,
 conf/, tests/{unit,integration}, docs/RESULTS.md. Lake layers under data/lake: bronze, silver, gold, ops.
 
 ## Vendors and formats

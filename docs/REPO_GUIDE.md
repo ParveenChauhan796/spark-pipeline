@@ -181,8 +181,8 @@ One module per stage. Each reads its inputs, calls the pure functions, writes th
 
 - **One 400-line orchestrator:** `pipeline.py` held every stage's I/O plus the CLI. It's now the
   `pipeline/` package, one module per stage. The code moved without changes, and `__init__.py` keeps
-  the old import names working. The CLAUDE.md rule ("I/O lives only in ingest/ and pipeline.py")
-  still holds in spirit: I/O lives in `ingest/` and the `pipeline/` package.
+  the old import names working. The CLAUDE.md rule now reads "I/O lives only in ingest/ and the
+  pipeline/ package", with the standalone tools `generate/` and `bench.py` named as the only other places.
 
 ### Known trade-offs, kept on purpose
 - **`config` is a plain dict, not typed dataclasses:** a typo in a key surfaces as a `KeyError` at
