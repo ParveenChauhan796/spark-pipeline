@@ -33,6 +33,9 @@ def get_spark(config: dict | None = None, overrides: dict | None = None) -> Spar
         SparkSession.builder.appName(cfg["app_name"])
         .master(cfg["master"])
         .config("spark.sql.shuffle.partitions", cfg["shuffle_partitions"])
+        # Heap size of the one local JVM. Only takes effect when it is set before the JVM starts,
+        # i.e. on the first session of a process (the test suite shares one session for ~120 tests).
+        .config("spark.driver.memory", cfg["driver_memory"])
         .config("spark.ui.enabled", str(cfg["ui_enabled"]).lower())
         .config("spark.sql.warehouse.dir", str(resolve(cfg["warehouse_dir"])))
         # Delta: SQL extension (MERGE, DESCRIBE HISTORY) + catalog that understands Delta tables

@@ -73,7 +73,7 @@ alternative would be, and where to change it.
 ### D8. `silver.vendor_product` never moves backwards in time
 - **Status:** Accepted (M3)
 - **Decision:** The MERGE updates a product only if `s.last_batch_date >= t.last_batch_date`.
-- **Where:** `pipeline.py` (`_upsert_products`).
+- **Where:** `pipeline/silver.py` (`_upsert_products`).
 
 ### D9. Delta snapshotPartitions is left at the default (50) in production
 - **Status:** Accepted (M3). Tests use 2. M7 measures the effect.
@@ -107,7 +107,7 @@ alternative would be, and where to change it.
 ### D13. `run_all` returns `BatchResult(bronze, silver, history)` per batch
 - **Status:** Accepted 2026-11-17
 - **Decision:** A dataclass replaces the old `(bronze, silver)` tuples. Later stages add fields here.
-- **Where:** `pipeline.py`.
+- **Where:** `pipeline/outcomes.py`, `pipeline/run.py`.
 
 ### D14. An offer that's absent from a later batch is unchanged, not delisted
 - **Status:** Accepted 2026-11-17
@@ -121,7 +121,7 @@ alternative would be, and where to change it.
   partition column could prune, and partitioning would only create small files.
 - **Scaling path:** Z-order or liquid clustering on `offer_key` first. Then split the table into current and
   archive tables. Use a coarse date partition only at terabyte scale. M7 may measure `OPTIMIZE ZORDER BY offer_key`.
-- **Where:** `pipeline.py` (`history_batch`).
+- **Where:** `pipeline/history.py` (`history_batch`).
 
 ### D16. The history table also stores `vendor_id` and `vendor_sku`
 - **Status:** Accepted 2026-11-17
@@ -133,7 +133,7 @@ alternative would be, and where to change it.
 - **Status:** Accepted 2026-11-17
 - **Decision:** The staged source contains only NEW and CHANGED offers, which keeps the MERGE small.
   The MERGE still has a `row_hash` differs condition as a safety net.
-- **Where:** `history/scd2.py` (`stage_merge`), `pipeline.py` (`_merge_history`).
+- **Where:** `history/scd2.py` (`stage_merge`), `pipeline/history.py` (`_merge_history`).
 
 ### D18. A crash retry records different log counts
 - **Status:** Accepted 2026-11-17
@@ -141,4 +141,223 @@ alternative would be, and where to change it.
   retry finds the rows already applied. They are counted as `stale`, not `new`/`changed`. The history table
   is identical; only that batch's log counts differ from a clean run.
 - **Alternative:** Read the MERGE's own metrics from `DESCRIBE HISTORY` on retry.
-- **Where:** `pipeline.py` (`history_batch`).
+- **Where:** `pipeline/history.py` (`history_batch`).
+
+## M5: Entity resolution
+
+### D19. ER recomputes everything each run, from the latest silver values
+- **Status:** Accepted 2026-11-17
+- **Decision:** ER reads all of `silver.vendor_product` (217k records), plus each offer's current price
+  from `gold.offer_history`. It overwrites `gold.product_xref` and `gold.dim_product` in full, and runs once
+  after the batch loop rather than per batch.
+- **Why:** At this size a full run takes about a minute, and incremental ER (matching only new records
+  against existing masters) is a project of its own.
+- **Alternative:** Incremental ER: block only new or changed records against the existing master records.
+- **Where:** `pipeline/er.py` (`resolve_entities`).
+
+### D20. Only cross-vendor pairs can match, GTIN included
+- **Status:** Accepted 2026-11-17
+- **Decision:** Two records from the same vendor are never linked directly. This assumes a vendor lists
+  each product once. They can still end up in one cluster through other vendors.
+- **Alternative:** Allow same-vendor edges to catch a vendor's own duplicate listings.
+- **Where:** `match/candidates.py`.
+
+### D21. Blocking pass 1 uses (brand, model-like token), and brandless records skip fuzzy matching
+- **Status:** Accepted 2026-11-17
+- **Decision:** A record's tokens are its normalized model plus any title token containing both letters
+  and digits, at least `er.blocking.min_token_length` long. Vendor C has no model column, but its titles
+  carry the model in about 56% of rows. Records with no brand (about 5%) only match through GTIN.
+- **Alternative:** Block on the token alone, with brand as a veto (gains recall on brandless records,
+  but blocks like `120v` get huge).
+- **Where:** `match/candidates.py`, `er.blocking` in `conf/pipeline.yaml`.
+
+### D22. Oversized blocks are dropped
+- **Status:** Accepted 2026-11-17
+- **Decision:** Blocks with more than `er.blocking.max_block_size` records are skipped, because they come
+  from generic tokens and comparing every pair in them grows quadratically. The number dropped is logged
+  in `ops.er_run_log`.
+- **Where:** `match/candidates.py`.
+
+### D23. Fuzzy score = weighted blend, tuned on the ground truth
+- **Status:** Accepted 2026-11-17
+- **Decision:** `w1*token_jaccard + w2*levenshtein_ratio + w3*price_closeness >= threshold`. Weights and
+  threshold live in `er.scoring` and are tuned against `ground_truth` (there's no holdout, so the
+  reported precision and recall are optimistic; see also D2). Tuned values: weights 0.35 / 0.25 / 0.40,
+  threshold 0.65. The first guess (0.45 / 0.35 / 0.20, threshold 0.75) gave precision 0.832 and recall 0.807.
+- **Alternative:** Hold out one vendor pair, or half the products, for evaluation.
+- **Where:** `match/score.py`, `er.scoring`.
+
+### D24. A different model number or GTIN vetoes a fuzzy match
+- **Status:** Accepted 2026-11-17
+- **Decision:** If both records have a model and the normalized models differ, or both have a `gtin14`
+  and they differ, the pair is never a fuzzy match, whatever the score. This favours precision.
+- **Why:** Profiling showed models are identical across vendors for the same product (0 of 46k differ).
+- **Where:** `match/score.py`.
+
+### D25. Clusters come from 3 rounds of label propagation
+- **Status:** Accepted 2026-11-17
+- **Decision:** Each record repeatedly takes the smallest record key among itself and its neighbours.
+  Chains longer than 3 hops may stay split, and one bad edge merges two products. Clusters holding two
+  records from the same vendor are counted in `ops.er_run_log` as a sign of that.
+- **Known failure (tested):** a record with no model can bridge two records whose models differ (A-C
+  and C-D pass, A-D is vetoed), so A and D end up in one cluster. See
+  `test_known_limitation_a_record_without_model_can_chain_two_models`.
+- **Alternative:** Iterate until nothing changes (exact connected components), or use GraphFrames
+  (a new dependency, not approved). A cluster-level veto (refuse a merge that would put two different
+  models or GTINs in one cluster) would fix the failure above.
+- **Where:** `match/cluster.py`, `er.label_propagation_rounds`.
+
+### D26. `master_id` = the smallest record key in the cluster
+- **Status:** Accepted 2026-11-17
+- **Decision:** `master_id` is the smallest `vendor_id|vendor_sku` in a cluster. It's deterministic for
+  the same input, but it can change when a new record with a smaller key joins.
+- **Alternative:** A persistent master-id mapping table that carries ids over between runs.
+- **Where:** `match/cluster.py`.
+
+### D27. Golden record: most complete record, then vendor priority
+- **Status:** Accepted 2026-11-17
+- **Decision:** Per master, the record with the most non-null fields among brand, category, model and
+  `gtin14` wins. Ties go to vendor priority (`er.golden.vendor_priority`), then to the smallest key. The
+  whole golden record is taken from that one record; nothing is mixed in from others.
+- **Alternative:** Field-level survivorship (best value per attribute from any record in the cluster).
+- **Where:** `match/golden.py`.
+
+### D28. `product_xref.match_method` is the strongest way a record was linked
+- **Status:** Accepted 2026-11-17
+- **Decision:** `GTIN` if the record has any GTIN edge, else `FUZZY` if it has a fuzzy edge, else
+  `SINGLETON`. Records linked only through clustering keep the method of their own edges.
+- **Where:** `match/golden.py`.
+
+### D29. An ER re-run is skipped when its inputs and config haven't changed
+- **Status:** Accepted 2026-11-17
+- **Decision:** `ops.er_run_log` records the Delta versions of `silver.vendor_product` and
+  `gold.offer_history` that a run read, plus a sha256 of the `er` config section. If a logged run has
+  the same three values, ER is skipped (`er --force` re-runs anyway). A re-run overwrites the gold tables
+  with identical output, because everything is deterministic.
+- **Where:** `pipeline/er.py` (`resolve_entities`), `ingest/ops.py`.
+
+### D30. Prices too far apart never match
+- **Status:** Accepted 2026-11-17 (added during tuning)
+- **Decision:** A fuzzy pair needs `price_closeness >= er.scoring.min_price_closeness` (0.85). The source
+  has many different products with identical titles and models (duplicate Amazon listings), and only
+  price tells them apart. True pairs: 99% have closeness >= 0.81. Wrong pairs: median 0.16.
+- **Effect:** Cluster precision went from 0.83 to 0.95 together with the reweighting in D23.
+- **Caveat:** This relies on synthetic prices: vendor spread <= 10% plus up to 15% drift over three days. Real
+  feeds with sales or bundles would need a looser gate.
+- **Where:** `match/score.py` (`accepted`).
+
+### D31. Keep only each record's best match per other vendor
+- **Status:** Accepted 2026-11-17 (added during tuning)
+- **Decision:** An edge survives only if it is the best-scoring edge for both of its records into the
+  other's vendor. GTIN edges rank above any fuzzy edge, and ties go to the smaller key. This builds on D20
+  (a vendor lists each product once).
+- **Effect:** Cluster precision went from 0.952 to 0.989 with recall unchanged (0.914 -> 0.913), because it
+  stops the chains of wrong edges that merged clusters.
+- **Alternative:** Turn it off with `er.scoring.best_match_per_vendor: false`.
+- **Where:** `match/score.py` (`best_match_per_vendor`, `combine_edges`).
+
+## M6: Reports
+
+### D32. The completeness report is long-format and generated from a column list
+- **Status:** Accepted 2026-11-17
+- **Decision:** `gold.rpt_attribute_completeness` has one row per (scope, attribute): `scope` is a
+  vendor id, or `CATALOGUE` for `gold.dim_product`, plus non_null, total and completeness =
+  `count(col)/count(*)`. The attributes come from `reports.completeness_columns` (title, brand,
+  category, model, gtin14) and are built in a loop; adding a column to the list adds rows.
+- **Alternative:** Wide format (one column per attribute), which is easier to eyeball but changes shape when the list changes.
+- **Where:** `reports/reports.py` (`attribute_completeness`).
+
+### D33. A price change = consecutive history versions with different prices
+- **Status:** Accepted 2026-11-17
+- **Decision:** `lag(price)` over each offer's SCD2 versions, ordered by `valid_from`. A version counts as a
+  change only if its price differs from the previous version's, so stock-only versions are ignored. The day is
+  the new version's `valid_from`. An offer's first version is not a change.
+- **Where:** `reports/reports.py` (`price_changes`).
+
+### D34. Brand in the price report = the golden brand of the offer's current master
+- **Status:** Accepted 2026-11-17
+- **Decision:** offer -> `product_xref` -> `dim_product.brand`. A master with no brand is reported as `UNKNOWN`.
+  It uses today's ER result, so history is regrouped if ER changes later (D26).
+- **Alternative:** The vendor's own brand on the offer (no ER dependency, but aliases split brands).
+- **Where:** `reports/reports.py` (`price_changes_by_brand`).
+
+### D35. Average % change is an unweighted mean per (brand, day)
+- **Status:** Accepted 2026-11-17
+- **Decision:** `avg((new - old) / old * 100)` over that brand's changes that day, plus counts of changes,
+  increases and decreases. A cheap item moving 10% counts the same as an expensive one.
+- **Where:** `reports/reports.py` (`price_changes_by_brand`).
+
+### D36. Reports are fully rebuilt (overwritten) at the end of every run
+- **Status:** Accepted 2026-11-17
+- **Decision:** Reports are rebuilt after ER in `run-all`, and also by a separate `reports` command. They're
+  small and deterministic, so a rebuild gives the same tables, with no skip logic needed.
+- **Where:** `pipeline/reports.py` (`build_reports`).
+
+### D37. Price spread only covers masters offered by 2+ vendors, using current prices
+- **Status:** Accepted 2026-11-17
+- **Decision:** `rpt_price_spread`: per master, n_vendors, min/max current price, spread_pct =
+  (max - min) / min * 100. Masters sold by a single vendor have no spread and are left out.
+- **Where:** `reports/reports.py` (`price_spread`).
+
+## M7: Optimize and measure
+
+### D38. Each bench variant runs in a fresh process against its own lake
+- **Status:** Accepted 2026-11-18
+- **Decision:** `make bench` starts every variant as a separate `python -m catalog_pipeline.bench` subprocess
+  (new JVM) with the lake root set to `data/bench/<variant>`, wiped at the start of the variant. The real
+  `data/lake` is never touched. Each variant runs once (`bench.repeats: 1`) to keep the bench at about 20-30 min.
+- **Why:** A shared JVM warms up (JIT, cached jars, OS file cache), which would favour whichever variant runs later.
+- **Alternative:** Run all variants in one session (faster, but biased), or take the best of 3 repeats (fairer, about 3x slower).
+- **Where:** `bench.py`, `conf/pipeline.yaml` (`bench:`).
+
+### D39. E2 compares three full-run variants, with AQE left on
+- **Status:** Accepted 2026-11-18
+- **Decision:** `baseline` uses 200 shuffle partitions and no broadcast. `partitions` uses 8 partitions and no
+  broadcast. `tuned` uses 8 partitions with broadcast, which is the production config. AQE stays on in all three
+  (it's on by default in Spark 3.5). AQE merges small shuffle partitions at runtime, so the 200-vs-8 gap will be
+  smaller than it would be without it. RESULTS.md says so. The AQE-off variant was skipped, as recommended in the plan the user approved.
+- **Alternative:** Add an AQE-off variant to show the raw cost of 200 partitions (one more full run).
+- **Where:** `conf/pipeline.yaml` (`bench.variants`), `bench.py`.
+
+### D40. The alias-join broadcast hint becomes a config flag
+- **Status:** Accepted 2026-11-18
+- **Decision:** `silver.broadcast_aliases` (default `true`) controls the `F.broadcast` hint in
+  `canonicalize_brand`. "No broadcast" variants set it to false and also set
+  `spark.sql.autoBroadcastJoinThreshold=-1`, so Spark can't broadcast on its own either. The bench captures the
+  physical plan of the alias join and records which join operator was used (BroadcastHashJoin or SortMergeJoin).
+- **Why:** The hint is currently hard-coded, so it can't be switched off to measure what it buys.
+- **Where:** `transform/brand.py`, `transform/silver.py`, `conf/pipeline.yaml`.
+
+### D41. E1 measures blocking only, on the tuned variant's silver data
+- **Status:** Accepted 2026-11-18
+- **Decision:** It compares brand-only blocking with the final blocking (model token + title prefix), using the
+  same `max_block_size`. It reports:
+  - candidate pairs, both as kept and uncapped (the sum of n(n-1)/2 per block)
+  - blocks dropped
+  - pair recall: the share of true cross-vendor pairs in the ground truth that appear as candidates, with and
+    without the GTIN pairs
+  - the runtime of candidate generation
+
+  Full scoring and clustering run only for the final blocking (precision/recall come from `ops.er_run_log`).
+- **Alternative:** Run full ER with brand-only blocking too, which needs a refactor of `resolve_entities`.
+- **Where:** `bench.py` (blocks from `candidates.block_key_passes`, the same function ER uses).
+
+### D42. Rows/sec is measured for three coarse stages
+- **Status:** Accepted 2026-11-18
+- **Decision:**
+  - `batches` (bronze, silver and history for all 12 batches): rows = landed rows read
+  - `er`: rows = ER input records
+  - `reports`: rows = history rows
+
+  Each stage's wall time comes from `time.perf_counter()` around the existing pipeline calls. Machine specs (CPU
+  model, cores, RAM, OS, Python, Java, Spark and Delta versions) are read from `/proc`, `platform` and the session.
+- **Alternative:** Per-layer timings (bronze, silver and history separately), which need timing hooks inside `run_all`.
+- **Where:** `bench.py`.
+
+### D43. `docs/RESULTS.md` is generated, overwritten and committed
+- **Status:** Accepted 2026-11-18
+- **Decision:** `make bench` writes the whole file: machine specs, the E2 table (runtime per stage and
+  variant, join operator), the E1 table, rows/sec and ER precision/recall. The raw numbers also go to
+  `data/bench/results.json`. OPTIMIZE/ZORDER (D15) and snapshotPartitions (D9) are not measured and are left
+  as future work.
+- **Where:** `bench.py`, `docs/RESULTS.md`.

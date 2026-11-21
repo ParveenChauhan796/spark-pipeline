@@ -154,18 +154,18 @@ row per `offer_key`, no overlapping intervals, replaying a batch is a no-op.
 *Spark concept: a self-join compares a DataFrame to itself. Comparing all ~240k records pairwise is
 ~30 billion pairs, which is why blocking is needed: only compare records that share a cheap key.*
 
-- [ ] **5a: Tier 1.** Exact match on `gtin14` produces edges with `match_method='GTIN'`
-- [ ] **5b: Tier 2.** Blocked fuzzy matching:
+- [x] **5a: Tier 1.** Exact match on `gtin14` produces edges with `match_method='GTIN'`
+- [x] **5b: Tier 2.** Blocked fuzzy matching:
   - Blocking pass 1: (brand, model-number token). Pass 2 (cut if behind): (brand, first title tokens)
   - Cross-vendor pairs only, using `a.key < b.key` to avoid duplicate pairs
   - Score with a weighted blend of token Jaccard (`array_intersect`/`array_union`), `levenshtein`
     ratio, and price closeness. Built-ins only. Tune keys and weights against ground truth
-- [ ] **5c: Cluster.** Fixed 3-round label propagation: each round, every record adopts the smallest
+- [x] **5c: Cluster.** Fixed 3-round label propagation: each round, every record adopts the smallest
       key among itself and its matched neighbours (join plus `groupBy min`). Approximate when
       clusters have more than one record per vendor; evaluation shows how much
-- [ ] **5d: Golden record.** Window function picks the most complete record per master, with a
+- [x] **5d: Golden record.** Window function picks the most complete record per master, with a
       vendor priority tiebreak. Write `gold.product_xref` and `gold.dim_product`
-- [ ] **5e: Evaluate.** Pairwise precision and recall vs `ground_truth`, logged to `ops.er_run_log`
+- [x] **5e: Evaluate.** Pairwise precision and recall vs `ground_truth`, logged to `ops.er_run_log`
       (records, candidate pairs, edges, masters, precision, recall, seconds). Target precision >= 0.95
 
 **Tests:** exact match, typo positive, different-model negative, 3-record chain.
@@ -176,12 +176,12 @@ row per `offer_key`, no overlapping intervals, replaying a batch is a no-op.
 ---
 
 ## M6: Reports (30 min)
-- [ ] `gold.rpt_attribute_completeness`: `count(col)/count(*)` generated for all attribute columns,
+- [x] `gold.rpt_attribute_completeness`: `count(col)/count(*)` generated for all attribute columns,
       per vendor and for the merged catalogue
-- [ ] `gold.rpt_price_changes_by_brand`: `lag()` over `offer_history` per `offer_key` to get the
+- [x] `gold.rpt_price_changes_by_brand`: `lag()` over `offer_history` per `offer_key` to get the
       previous price, join to xref and master brand, aggregate per brand per day (changes, ups,
       downs, average % change)
-- [ ] Stretch: `rpt_price_spread` (cross-vendor min/max price per master product)
+- [x] Stretch: `rpt_price_spread` (cross-vendor min/max price per master product)
 
 **Done when:** tests on a tiny fixture match hand-computed values.
 
@@ -193,20 +193,20 @@ BroadcastHashJoin). The Spark UI at `localhost:4040` shows stages, shuffle sizes
 `spark.sql.shuffle.partitions` defaults to 200, far too many for local small data. AQE (adaptive
 query execution) can adjust plans at runtime.*
 
-- [ ] **E1:** brand-only blocking vs final blocking. Report candidate pairs, pair recall, runtime
-- [ ] **E2:** shuffle partitions 200 vs ~8, plus broadcast on the alias table, for a full run
-- [ ] `make bench` writes before/after tables and machine specs to `docs/RESULTS.md`
+- [x] **E1:** brand-only blocking vs final blocking. Report candidate pairs, pair recall, runtime
+- [x] **E2:** shuffle partitions 200 vs ~8, plus broadcast on the alias table, for a full run
+- [x] `make bench` writes before/after tables and machine specs to `docs/RESULTS.md`
 
 **Done when:** before/after tables are filled in.
 
 ---
 
 ## M8: README (30 min)
-- [ ] Mermaid architecture diagram
-- [ ] Quickstart
-- [ ] Results table (headline numbers below)
-- [ ] Sample reports
-- [ ] Limitations section (see below)
+- [x] Mermaid architecture diagram
+- [x] Quickstart
+- [x] Results table (headline numbers below)
+- [x] Sample reports
+- [x] Limitations section (see below)
 
 **Done when:** `make setup && make data && make run-all && make test` works from a fresh clone.
 

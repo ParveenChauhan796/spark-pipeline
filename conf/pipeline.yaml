@@ -2,6 +2,7 @@ spark:
   app_name: catalog_pipeline
   master: "local[*]"        # local mode: all CPU cores of this machine act as the workers
   shuffle_partitions: 8     # Spark's default of 200 is far too many for small local data
+  driver_memory: 4g         # JVM heap. In local mode the driver AND executors share it (Spark's default is 1g)
   ui_enabled: true          # Spark UI at http://localhost:4040 while a session is running
   warehouse_dir: data/spark-warehouse
 
@@ -24,7 +25,7 @@ generate:
     timeout_seconds: 60
     user_agent: catalog-pipeline-learning-project/0.1
   landing_dir: &landing_dir data/landing
-  ground_truth_path: data/ground_truth/ground_truth.csv
+  ground_truth_path: &ground_truth_path data/ground_truth/ground_truth.csv
   brand_aliases_path: &brand_aliases_path data/reference/brand_aliases.csv   # reference table for silver
   batch_dates: ["2025-03-01", "2025-03-02", "2025-03-03"]   # day 1 = full snapshot, then change feeds
 
@@ -71,6 +72,7 @@ ingest:
     schema_drift_log: schema_drift_log
     silver_log: silver_log
     history_log: history_log
+    er_run_log: er_run_log
 
 normalization:
   # Trailing legal-entity words ignored when comparing brand names ("Acme Co." == "ACME").
@@ -81,6 +83,7 @@ silver:
   stock_low_max_qty: 5        # qty 0 -> OUT, 1..this -> LOW, above -> IN
   gtin_min_length: 8          # all-digit barcodes of this many digits or more are left-padded to 14
   gtin_max_length: 14
+  broadcast_aliases: true     # D40: broadcast the tiny alias table in the brand join (the bench turns it off)
   tables:
     vendor_product: vendor_product
     vendor_offer: vendor_offer
@@ -89,3 +92,43 @@ silver:
 history:
   tables:
     offer_history: offer_history   # gold layer, SCD2 over price + stock_status (see docs/DECISIONS.md D10-D18)
+
+er:
+  ground_truth_path: *ground_truth_path   # evaluation only, never used for matching
+  tables:
+    product_xref: product_xref     # gold: (vendor_id, vendor_sku) -> master_id
+    dim_product: dim_product       # gold: one golden record per master_id
+  blocking:
+    min_token_length: 4            # model-like title tokens (letters and digits) at least this long
+    max_block_size: 50             # blocks bigger than this are dropped (generic tokens; D22)
+    title_prefix_tokens: 2         # pass 2 key: brand + first N title words after removing the brand
+  scoring:                         # score = sum(weight * similarity), each similarity in [0, 1] (D23)
+    weights: {jaccard: 0.35, levenshtein: 0.25, price: 0.40}   # tuned on ground truth, see DECISIONS D23
+    threshold: 0.65
+    min_price_closeness: 0.85      # prices further apart than this never match (D30)
+    best_match_per_vendor: true    # keep an edge only if it is each side's best match in the other vendor (D31)
+  label_propagation_rounds: 3      # D25
+  golden:
+    vendor_priority: [A, B, D, C]  # tie-break when two records are equally complete (D27)
+
+reports:
+  tables:                          # gold layer, fully rebuilt every run (D36)
+    attribute_completeness: rpt_attribute_completeness
+    price_changes_by_brand: rpt_price_changes_by_brand
+    price_spread: rpt_price_spread
+  completeness_columns: [title, brand, category, model, gtin14]   # D32: one report row per column per scope
+  min_vendors_for_spread: 2        # D37: masters sold by fewer vendors have no spread
+  show:                            # `make reports-show`: rows printed per report and their sort order
+    attribute_completeness: {order_by: [scope, attribute], descending: false, n: 25}
+    price_changes_by_brand: {order_by: [changes], descending: true, n: 10}
+    price_spread: {order_by: [spread_pct], descending: true, n: 10}
+
+bench:                             # `make bench` (M7, D38-D43). Each variant: fresh process, own lake under root
+  root: data/bench
+  results_path: docs/RESULTS.md
+  repeats: 1                       # runs per variant; the fastest is reported (D38)
+  variants:                        # D39. broadcast=false also sets spark.sql.autoBroadcastJoinThreshold=-1
+    baseline:   {shuffle_partitions: 200, broadcast: false}
+    partitions: {shuffle_partitions: 8,   broadcast: false}
+    tuned:      {shuffle_partitions: 8,   broadcast: true}
+  blocking_variant: tuned          # E1 runs on this variant's lake (D41)
